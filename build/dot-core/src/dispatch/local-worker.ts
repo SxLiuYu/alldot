@@ -517,6 +517,16 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
       { role: "user", content: task.intent },
     ];
     for (let step = 1; step <= maxSteps; step += 1) {
+      // 长程任务检查点：每步保存进度，超时后可断点续跑
+      try {
+        const { getLongTaskManager } = await import("../longtask/index.ts");
+        getLongTaskManager().checkpoint(task.id, {
+          stage: `执行第 ${step}/${maxSteps} 步`,
+          completedSteps: Array.from({ length: step - 1 }, (_, i) => i + 1),
+          spentTokens: 0,
+          status: "running",
+        });
+      } catch { /* 检查点模块不可用不影响 */ }
       let turn: ModelTurn;
       try {
         turn = await complete({ messages, tools: toolDecls });
@@ -616,6 +626,21 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
           log("warn", `工人（${task.id}）第 ${step} 步 ${call.name} 重复，没再执行`);
           continue;
         }
+        // Sentinel 权限检查：按服务粒度拦截不允许的操作（在闸门六档之前）
+        try {
+          const { getSentinel } = await import("../sentinel/index.ts");
+          const sentinel = getSentinel();
+          const verdict = sentinel.check(call.name);
+          if (!verdict.allowed) {
+            log("warn", `工人（${task.id}）第 ${step} 步被 Sentinel 拒绝：${call.name}（${verdict.reason}）`);
+            messages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: `Sentinel 权限拒绝：${verdict.reason}。请联系用户调整权限策略。`,
+            });
+            continue;
+          }
+        } catch { /* Sentinel 不可用时放行 */ }
         // 工人不是宿主会话，不会触发 before_tool_call 钩子，身份表里没有这次调用。
         // 手的第一步就是「取身份」，取不到一律 identity_missing（2026-11-25 真机就栽在这）。
         // 这里按宿主钩子的同一份形状补登记：只登记本次 toolCallId → 只能被取一次；
@@ -709,8 +734,53 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
         }
       } catch { /* 记忆模块不可用不影响任务执行 */ }
 
-      const fullExtra = (params.extraSystemPrompt ?? "") + memoryContext;
-      runs.set(runId, { promise: runLoop(task, fullExtra) });
+      // 断点续跑：有可恢复的检查点时注入恢复提示词
+      let resumePrompt = "";
+      try {
+        const { getLongTaskManager } = await import("../longtask/index.ts");
+        const ltMgr = getLongTaskManager();
+        if (ltMgr.canResume(task.id)) {
+          const prompt = ltMgr.buildResumePrompt(task.id);
+          if (prompt) {
+            resumePrompt = `\n\n${prompt}`;
+            ltMgr.resume(task.id);
+            log("info", `任务 ${task.id} 断点续跑（第 ${ltMgr.get(task.id)?.resumeCount ?? 1} 次）`);
+          }
+        }
+      } catch { /* 不影响 */ }
+
+      // 个性化：名字/风格/语气注入系统提示词
+      let personalizeContext = "";
+      try {
+        const { getPersonalizeStore, buildPersonalizePrompt } = await import("../personalize/index.ts");
+        const pStore = getPersonalizeStore();
+        personalizeContext = "\n\n" + buildPersonalizePrompt(pStore.get());
+      } catch { /* 个性化模块不可用不影响任务执行 */ }
+
+      const fullExtra = (params.extraSystemPrompt ?? "") + memoryContext + personalizeContext + resumePrompt;
+      runs.set(runId, {
+        promise: runLoop(task, fullExtra).then(async (result) => {
+          // 任务完成后：清理检查点 + 自动提炼偏好记忆
+          try {
+            const { getLongTaskManager } = await import("../longtask/index.ts");
+            getLongTaskManager().complete(task.id);
+          } catch { /* 不影响 */ }
+          try {
+            const { getMemoryStore } = await import("../memory/index.ts");
+            const { autoExtract } = await import("../memory/auto-extract.ts");
+            const mStore = getMemoryStore();
+            autoExtract(mStore, {
+              userMessages: [task.intent],
+              taskIntent: task.intent ?? "",
+              resultSummary: result.status === "ok" ? "任务成功完成" : undefined,
+              success: result.status === "ok",
+              error: result.error,
+              taskId: task.id,
+            });
+          } catch { /* 不影响 */ }
+          return result;
+        }),
+      });
       return { runId };
     },
     async waitForRun(params) {
