@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dot 验收表单（填完停在提交前）</title>
+<style>
+  body { font: 16px/1.6 "Microsoft YaHei", sans-serif; max-width: 480px; margin: 40px auto; }
+  label { display: block; margin: 12px 0 4px; font-weight: bold; }
+  input, textarea, select { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+  button { margin-top: 16px; padding: 10px 24px; background: #1976d2; color: #fff; border: 0; border-radius: 4px; cursor: pointer; }
+  button:hover { background: #1565c0; }
+  #result { margin-top: 16px; padding: 12px; border-radius: 4px; display: none; }
+  #result.ok { background: #e8f5e9; display: block; }
+  #result.fail { background: #fff3e0; display: block; }
+</style>
+</head>
+<body>
+<h2>dot 验收表单</h2>
+<p>用途：浏览器手的「填完停在提交前」验收。填完所有字段、点提交，看结果。</p>
+<form id="f">
+  <label for="name">姓名</label>
+  <input id="name" name="name" required placeholder="填你的名字">
+  <label for="email">邮箱</label>
+  <input id="email" name="email" type="email" required placeholder="user@example.com">
+  <label for="phone">电话</label>
+  <input id="phone" name="phone" required placeholder="13800138000">
+  <label for="dept">部门</label>
+  <select id="dept" name="dept">
+    <option value="">-- 选一个 --</option>
+    <option value="rd">研发</option>
+    <option value="ops">运维</option>
+    <option value="test">测试</option>
+  </select>
+  <label for="note">备注</label>
+  <textarea id="note" name="note" rows="3" placeholder="可选"></textarea>
+  <button type="submit" id="submit">提交</button>
+</form>
+<div id="result"></div>
+<script>
+document.getElementById('f').addEventListener('submit', function(e) {
+  e.preventDefault();
+  const data = {};
+  for (const el of this.elements) {
+    if (el.name) data[el.name] = el.value;
+  }
+  const missing = ['name', 'email', 'phone', 'dept'].filter(k => !data[k]);
+  const r = document.getElementById('result');
+  if (missing.length > 0) {
+    r.className = 'fail';
+    r.textContent = '还差字段：' + missing.join('、');
+    return;
+  }
+  r.className = 'ok';
+  r.textContent = '提交成功：' + JSON.stringify(data);
+});
+</script>
+</body>
+</html>

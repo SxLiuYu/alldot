@@ -1,0 +1,51 @@
+# dependencies
+node_modules/
+
+# runtime data
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+*.log
+
+# secrets
+bridge-token
+allbot.json
+config.json
+
+# build artifacts
+build/package/alldot-dist/
+build/installer/setup.exe
+build/ui/dist/
+tmp/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# zcode
+.zcode/
+
+# internal working data
+_proj_extract/
+_chat_2weeks.txt
+_chat_chunks/
+_t0_work/
+_q/
+research/
+build/记录/
+build/_canary/
+.playwright-mcp/
+.memory/
+*.log.md
+*.stackdump
+allbot-src/
+dsh-*-2weeks*
+# temp files at root
+_*
+example-*.png

@@ -1,0 +1,800 @@
+<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>alldot</title>
+<style>
+/* ── 配色：接近纯黑，只有一个强调色。原则是「除了文字和气泡，别的都不要抢眼」。 ── */
+:root{
+  --bg:#0b0c0e; --bg2:#121316; --line:#23252b; --line2:#2e3138;
+  --text:#eceded; --dim:#9aa0a8; --faint:#6b7078;
+  --accent:#7aa2f7; --ok:#4ade80; --warn:#fbbf24; --bad:#f87171;
+  --bubble:#1d1f24;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.7 "Microsoft YaHei UI","PingFang SC","Segoe UI",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;overflow:hidden}
+button{font:inherit;color:inherit}
+
+/* ── 顶栏：左边名字，右边状态和入口 ── */
+header{height:52px;display:flex;align-items:center;gap:12px;padding:0 18px;
+  border-bottom:1px solid var(--line);background:rgba(11,12,14,.9);position:relative;z-index:5}
+.logo{font-size:15px;font-weight:600;letter-spacing:.3px}
+.logo small{color:var(--faint);font-weight:400;margin-left:8px;font-size:12px}
+header .sp{flex:1}
+.hbtn{background:none;border:1px solid transparent;border-radius:8px;padding:5px 10px;
+  color:var(--dim);cursor:pointer;font-size:13px;display:flex;align-items:center;gap:6px}
+.hbtn:hover{background:var(--bg2);color:var(--text);border-color:var(--line)}
+.hbtn .badge{background:var(--warn);color:#241a00;font-size:11px;font-weight:700;
+  border-radius:9px;padding:0 6px;line-height:16px}
+.badge:empty{display:none}
+.live{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--faint)}
+.live i{width:7px;height:7px;border-radius:50%;background:var(--faint);display:block}
+.live.on i{background:var(--ok);box-shadow:0 0 0 3px rgba(74,222,128,.12)}
+.live.bad i{background:var(--bad)}
+
+/* ── 对话区 ── */
+main{position:absolute;top:52px;bottom:0;left:0;right:0;overflow-y:auto;scroll-behavior:smooth}
+.wrap{max-width:760px;margin:0 auto;padding:26px 22px 190px}
+
+.msg{display:flex;margin-bottom:26px}
+.msg.me{justify-content:flex-end}
+.msg.me .body{background:var(--bubble);border-radius:16px 16px 4px 16px;padding:11px 15px;max-width:78%}
+.msg.bot .body{max-width:100%}
+.avatar{width:26px;height:26px;border-radius:50%;background:#1a1c21;border:1px solid var(--line2);
+  display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--dim);flex:0 0 26px;margin-right:10px;margin-top:2px}
+.msg.bot .body{flex:1}
+.msg p{margin:0 0 8px;white-space:pre-wrap;word-break:break-word}
+.msg p:last-child{margin-bottom:0}
+.meta{color:var(--faint);font-size:12px;margin-top:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.st{font-size:12px;padding:1px 8px;border-radius:999px;border:1px solid var(--line2);color:var(--dim)}
+.st.done{color:var(--ok);border-color:rgba(74,222,128,.35)}
+.st.failed{color:var(--bad);border-color:rgba(248,113,113,.35)}
+.st.running,.st.queued{color:var(--accent);border-color:rgba(122,162,247,.35)}
+.st.awaiting_approval{color:var(--warn);border-color:rgba(251,191,36,.35)}
+details{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}
+summary{cursor:pointer;color:var(--faint);font-size:12.5px;outline:none;list-style:none}
+summary::-webkit-details-marker{display:none}
+summary:hover{color:var(--dim)}
+.steps{margin:8px 0 0;padding:0;list-style:none;font-size:12.5px;color:var(--dim)}
+.steps li{padding:3px 0;border-bottom:1px solid #171a1e;display:flex;gap:8px}
+.steps li:last-child{border-bottom:none}
+.steps .n{color:var(--faint);flex:0 0 18px}
+.steps .t{color:var(--text);flex:0 0 auto}
+.steps .e{color:var(--bad);word-break:break-all}
+.dots{display:inline-flex;gap:3px;vertical-align:middle}
+.dots i{width:5px;height:5px;border-radius:50%;background:var(--dim);display:block;animation:bl 1.2s infinite}
+.dots i:nth-child(2){animation-delay:.15s}.dots i:nth-child(3){animation-delay:.3s}
+@keyframes bl{0%,60%,100%{opacity:.25}30%{opacity:1}}
+
+/* 反馈：每条回答下面两个小字。不抢眼，但点下去会进账本、进自我改进的证据 */
+.fb{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12.5px;color:var(--faint)}
+.fb button{background:none;border:none;color:var(--faint);cursor:pointer;padding:2px 4px;font-size:12.5px}
+.fb button:hover{color:var(--text)}
+.fb .note{flex:1;min-width:120px;background:var(--bg2);border:1px solid var(--line2);border-radius:8px;
+  color:var(--text);padding:5px 8px;font:inherit;font-size:12.5px;outline:none}
+.fb .say{color:var(--dim)}
+
+/* 审批卡：直接长在对话里，不是弹窗 */
+.appr{border:1px solid rgba(251,191,36,.35);background:rgba(251,191,36,.05);border-radius:12px;
+  padding:13px 15px;margin:0 0 14px}
+.appr h4{margin:0 0 6px;font-size:14px;font-weight:600}
+.appr .q{color:var(--dim);font-size:13px;white-space:pre-wrap;word-break:break-word}
+.appr .adv{font-size:12.5px;margin-top:8px;color:var(--warn)}
+.appr .acts{display:flex;gap:8px;margin-top:12px}
+.btn{border:1px solid var(--line2);background:var(--bg2);border-radius:9px;padding:6px 14px;
+  cursor:pointer;font-size:13px}
+.btn:hover{border-color:#3c4048;background:#191b20}
+.btn.primary{background:var(--accent);color:#08101f;border-color:transparent;font-weight:600}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.no{color:var(--bad);border-color:rgba(248,113,113,.3)}
+.btn[disabled]{opacity:.45;cursor:default}
+
+/* ── 输入区：固定在底部，中间对齐 ── */
+footer{position:absolute;left:0;right:0;bottom:0;background:linear-gradient(180deg,rgba(11,12,14,0),var(--bg) 22%);
+  padding:34px 22px 18px}
+.composer{max-width:760px;margin:0 auto;background:var(--bg2);border:1px solid var(--line2);
+  border-radius:18px;padding:10px 12px 8px;transition:border-color .15s}
+.composer:focus-within{border-color:#3d434d}
+.composer textarea{width:100%;background:none;border:none;outline:none;color:var(--text);
+  font:inherit;line-height:1.6;resize:none;max-height:190px;padding:4px 2px}
+.composer textarea::placeholder{color:var(--faint)}
+.crow{display:flex;align-items:center;gap:8px;margin-top:4px}
+.crow .sp{flex:1}
+.iconbtn{background:none;border:none;color:var(--faint);cursor:pointer;padding:4px 6px;border-radius:7px;font-size:13px}
+.iconbtn:hover{color:var(--text);background:#191b20}
+.send{width:32px;height:32px;border-radius:50%;border:none;background:var(--accent);color:#08101f;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px}
+.send:hover{filter:brightness(1.1)}
+.send[disabled]{opacity:.35;cursor:default}
+.hint{max-width:760px;margin:8px auto 0;color:var(--faint);font-size:11.5px;text-align:center}
+
+/* 设置抽屉（工作区/档位），默认收起 */
+.opts{max-width:760px;margin:0 auto 8px;display:none;gap:8px;align-items:center;
+  background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:9px 12px;font-size:13px}
+.opts.on{display:flex}
+.opts input{flex:1;background:none;border:none;outline:none;color:var(--text);font:inherit;min-width:80px}
+.opts select{background:var(--bg);color:var(--text);border:1px solid var(--line2);border-radius:8px;padding:4px 6px;font:inherit}
+.opts label{color:var(--faint);white-space:nowrap}
+
+/* 抽屉面板 */
+.sheet{position:absolute;top:52px;right:0;bottom:0;width:min(520px,100%);background:var(--bg);
+  border-left:1px solid var(--line);transform:translateX(102%);transition:transform .22s ease;z-index:4;
+  display:flex;flex-direction:column}
+.sheet.on{transform:none}
+.sheet .hd{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line)}
+.sheet .hd b{font-size:14px}
+.sheet .hd .sp{flex:1}
+.sheet .bd{overflow-y:auto;padding:16px 18px 30px;font-size:13.5px}
+.sec{margin-bottom:22px}
+.sec h5{margin:0 0 8px;color:var(--faint);font-size:11.5px;font-weight:600;letter-spacing:.6px;text-transform:uppercase}
+.kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #171a1e}
+.kv:last-child{border-bottom:none}
+.kv span:last-child{color:var(--dim)}
+.radio{display:flex;gap:9px;align-items:flex-start;padding:8px 0;cursor:pointer}
+.radio input{margin-top:4px}
+.radio b{font-weight:500;display:block}
+.radio small{color:var(--faint);font-size:12px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;color:var(--faint);font-weight:500;padding:6px 4px;border-bottom:1px solid var(--line)}
+td{padding:6px 4px;border-bottom:1px solid #171a1e;color:var(--dim);vertical-align:top}
+td.mono{font-family:Consolas,ui-monospace,monospace}
+.empty{color:var(--faint);font-size:13px;padding:14px 0}
+
+/* 空状态 */
+.hello{text-align:center;padding:12vh 0 0}
+.hello h1{font-size:26px;font-weight:600;margin:0 0 8px;letter-spacing:.2px}
+.hello p{color:var(--dim);margin:0 0 26px}
+.chips{display:flex;flex-wrap:wrap;gap:9px;justify-content:center}
+.chip{border:1px solid var(--line2);background:var(--bg2);border-radius:999px;padding:8px 15px;
+  font-size:13px;color:var(--dim);cursor:pointer}
+.chip:hover{color:var(--text);border-color:#3d434d}
+
+.toast{position:fixed;left:50%;bottom:120px;transform:translateX(-50%) translateY(8px);opacity:0;
+  background:#1b1d22;border:1px solid var(--line2);border-radius:10px;padding:9px 16px;font-size:13px;
+  transition:.2s;max-width:70vw;z-index:9}
+.toast.on{opacity:1;transform:translateX(-50%)}
+.hidden{display:none!important}
+</style></head>
+<body>
+
+<header>
+  <div class="logo">alldot<small>本机助手</small></div>
+  <div class="sp"></div>
+  <div class="live" id="live"><i></i><span id="liveText">连接中</span></div>
+  <button class="hbtn" id="btnApprovals">审批 <span class="badge" id="apBadge"></span></button>
+  <button class="hbtn" id="btnHealth">体检</button>
+</header>
+
+<main id="scroller"><div class="wrap" id="thread"></div></main>
+
+<!-- 审批抽屉 -->
+<div class="sheet" id="sheetApprovals">
+  <div class="hd"><b>审批</b><span class="sp"></span>
+    <button class="hbtn" data-close="sheetApprovals">收起</button></div>
+  <div class="bd">
+    <div class="sec">
+      <h5>怎么批</h5>
+      <label class="radio"><input type="radio" name="mode" value="off" id="modeOff">
+        <span><b>全都问我</b><small>默认。每一件都等你点。</small></span></label>
+      <label class="radio"><input type="radio" name="mode" value="tier4" id="modeTier4">
+        <span><b>机械同意</b><small>第 4 档以内一律同意，不看内容。</small></span></label>
+      <label class="radio"><input type="radio" name="mode" value="smart" id="modeSmart">
+        <span><b>智能审批</b><small>先过硬规则（第 5 档、危险操作、越出工作区一定问），再让模型看该不该批。</small></span></label>
+      <div class="empty" id="autoRule" style="padding:8px 0 0"></div>
+    </div>
+    <div class="sec"><h5>等你点头</h5><div id="apPending"></div></div>
+    <div class="sec"><h5>最近的决定</h5><div id="apRecent"></div></div>
+    <div class="sec"><h5>自动同意的记录</h5><div id="autoLog"></div></div>
+  </div>
+</div>
+
+<!-- 体检抽屉 -->
+<div class="sheet" id="sheetHealth">
+  <div class="hd"><b>体检</b><span class="sp"></span>
+    <button class="hbtn" id="reloadHealth">重算</button>
+    <button class="hbtn" data-close="sheetHealth">收起</button></div>
+  <div class="bd">
+    <div class="sec" id="healthSummary"></div>
+    <div class="sec"><h5>待部署的改动</h5>
+      <div class="empty" style="padding:0 0 8px">补丁先在副本上跑过全量测试；部署会备份原文件、改动真源码再测一遍，不过自动回滚，然后需要重启网关才生效。</div>
+      <div id="patches"></div>
+    </div>
+    <div class="sec"><h5>它自己提的改动建议</h5><div id="proposals"></div></div>
+    <div class="sec"><h5>最常出错的地方</h5><div id="errTable"></div></div>
+    <div class="sec"><h5>钱花在哪</h5><div id="spendTable"></div></div>
+    <div class="sec"><h5>账本</h5><div id="ledgerNote" class="empty"></div></div>
+  </div>
+</div>
+
+<footer>
+  <div class="opts" id="opts">
+    <label>工作区</label>
+    <input id="workspace" placeholder="允许它动手的文件夹，不填就只做不用落盘的事" value="C:/Users/1/Documents/练习">
+    <button class="iconbtn" id="useDesktop">用桌面</button>
+    <label>认真度</label>
+    <select id="profile">
+      <option value="balanced">正常</option>
+      <option value="cheap">省钱</option>
+      <option value="strong">认真</option>
+    </select>
+    <label title="这个档位及以下不用你点同意；5 档（身份/钱）和 6 档（危险）永远要你点">自动同意</label>
+    <select id="autoApprove">
+      <option value="0">关（都要我点）</option>
+      <option value="1">1 档及以下</option>
+      <option value="2">2 档及以下</option>
+      <option value="3">3 档及以下</option>
+      <option value="4">4 档及以下</option>
+    </select>
+  </div>
+  <div class="composer">
+    <textarea id="say" rows="1" placeholder="要它做什么？Enter 发出，Shift+Enter 换行"></textarea>
+    <div class="crow">
+      <button class="iconbtn" id="btnOpts" title="工作区 / 认真度">设置</button>
+      <span class="sp"></span>
+      <button class="send" id="send" title="发出">↑</button>
+    </div>
+  </div>
+  <div class="hint">它动手之前会记账；要你拿主意的会出现在对话里</div>
+</footer>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ══ 通道：exe 里用 postMessage，浏览器里用 fetch ══ */
+var IN_HOST = !!(window.chrome && window.chrome.webview);
+var callSeq = 0, callWait = {};
+if (IN_HOST) {
+  window.chrome.webview.addEventListener("message", function (ev) {
+    var m = ev.data;
+    if (!m || m.type !== "result") return;
+    var done = callWait[m.id];
+    if (!done) return;
+    delete callWait[m.id];
+    done({ status: m.status, body: m.body });
+  });
+}
+function api(path, opts) {
+  if (!IN_HOST) {
+    return fetch(path, opts).then(function (r) {
+      return r.json().then(function (j) { return { status: r.status, body: j }; });
+    });
+  }
+  return new Promise(function (resolve, reject) {
+    var id = ++callSeq;
+    callWait[id] = resolve;
+    var body = null;
+    if (opts && opts.body) { try { body = JSON.parse(opts.body); } catch (e) { body = null; } }
+    window.chrome.webview.postMessage({ type: "call", id: id, path: path, method: (opts && opts.method) || "GET", body: body });
+    setTimeout(function () { if (callWait[id]) { delete callWait[id]; reject(new Error("宿主没回话")); } }, 25000);
+  });
+}
+
+function $(id) { return document.getElementById(id); }
+function esc(s) {
+  return String(s === null || s === undefined ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function num(n) {
+  if (n === null || n === undefined) return "0";
+  if (n >= 100000000) return (n / 100000000).toFixed(1) + " 亿";
+  if (n >= 10000) return (n / 10000).toFixed(1) + " 万";
+  return String(n);
+}
+function hhmm(iso) {
+  if (!iso) return "";
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  var p = function (x) { return (x < 10 ? "0" : "") + x; };
+  return p(d.getHours()) + ":" + p(d.getMinutes());
+}
+function toast(msg, bad) {
+  var t = $("toast");
+  t.textContent = msg;
+  t.style.borderColor = bad ? "rgba(248,113,113,.45)" : "var(--line2)";
+  t.style.color = bad ? "#fca5a5" : "var(--text)";
+  t.classList.add("on");
+  clearTimeout(t._h);
+  t._h = setTimeout(function () { t.classList.remove("on"); }, 3000);
+}
+
+/* ══ 状态 ══ */
+var S = {
+  tasks: [],           // 最近任务（时间正序渲染）
+  open: {},            // 展开了「过程」的任务 id
+  detail: {},          // 已取回的任务详情
+  fb: {},              // 反馈：{done:bool, open:bool, verdict, note}
+  fbTyping: false,     // 正在写反馈时不重绘（否则输入框会被 5 秒轮询清掉）
+  sending: false,
+  lastPollAt: 0,
+  seenAp: {}           // 已经提醒过的待批 id（新出现一张就弹一次提示）
+};
+var LABEL = {
+  queued: "排队中", running: "在做", awaiting_approval: "等你点头",
+  paused: "暂停", done: "完成", failed: "没做成", cancelled: "已取消", interrupted: "中断"
+};
+var EXAMPLES = [
+  "用干净浏览器打开 example.com，读出标题并截图",
+  "在桌面建一个「alldot 测试」文件夹，里面放一个 说明.txt",
+  "看看我最近有没有漏掉的消息"
+];
+
+/* ══ 渲染对话 ══ */
+function render() {
+  var box = $("thread");
+  if (S.fbTyping) return; // 正在写反馈：别把手里的输入框刷掉
+  var list = S.tasks.slice().sort(function (a, b) { return String(a.createdAt || "").localeCompare(String(b.createdAt || "")); });
+  if (!list.length) {
+    var chips = EXAMPLES.map(function (x) {
+      return '<button class="chip" data-fill="' + esc(x) + '">' + esc(x) + "</button>";
+    }).join("");
+    box.innerHTML = '<div class="hello"><h1>在的。要做什么？</h1>' +
+      '<p>说一句话，它自己挑手：浏览器、桌面、文件夹。</p><div class="chips">' + chips + "</div></div>";
+    var cs = box.querySelectorAll("[data-fill]");
+    for (var c = 0; c < cs.length; c++) cs[c].onclick = function () {
+      $("say").value = this.getAttribute("data-fill"); $("say").focus(); autoGrow();
+    };
+    return;
+  }
+  var html = "";
+  for (var i = 0; i < list.length; i++) html += card(list[i]);
+  box.innerHTML = html;
+  // 事件绑定（内联 onclick 会被 WebView2 的 CSP 挡，全部走 addEventListener）
+  var toggles = box.querySelectorAll("[data-open]");
+  for (var t = 0; t < toggles.length; t++) toggles[t].onclick = function (e) {
+    e.preventDefault();
+    var id = this.getAttribute("data-open");
+    S.open[id] = !S.open[id];
+    if (S.open[id] && !S.detail[id]) fetchDetail(id);
+    render();
+  };
+  var ok = box.querySelectorAll("[data-ok]");
+  for (var a = 0; a < ok.length; a++) ok[a].onclick = function () { decide(this.getAttribute("data-ok"), "approved"); };
+  var no = box.querySelectorAll("[data-no]");
+  for (var b = 0; b < no.length; b++) no[b].onclick = function () { decide(this.getAttribute("data-no"), "rejected"); };
+  // 反馈
+  var goods = box.querySelectorAll("[data-good]");
+  for (var g = 0; g < goods.length; g++) goods[g].onclick = function () {
+    sendFeedback(this.getAttribute("data-good"), "good", "");
+  };
+  var bads = box.querySelectorAll("[data-bad]");
+  for (var bd = 0; bd < bads.length; bd++) bads[bd].onclick = function () {
+    var id = this.getAttribute("data-bad");
+    S.fb[id] = { open: true };
+    render();
+    var input = box.querySelector('[data-note="' + id + '"]');
+    if (input) input.focus();
+  };
+  var fsend = box.querySelectorAll("[data-fbsend]");
+  for (var fs = 0; fs < fsend.length; fs++) fsend[fs].onclick = function () {
+    var id = this.getAttribute("data-fbsend");
+    var input = box.querySelector('[data-note="' + id + '"]');
+    sendFeedback(id, "bad", input ? input.value : "");
+  };
+  var fcancel = box.querySelectorAll("[data-fbcancel]");
+  for (var fc = 0; fc < fcancel.length; fc++) fcancel[fc].onclick = function () {
+    var id = this.getAttribute("data-fbcancel");
+    S.fb[id] = null; S.fbTyping = false; render();
+  };
+  var notes = box.querySelectorAll("[data-note]");
+  for (var nt = 0; nt < notes.length; nt++) {
+    notes[nt].onfocus = function () { S.fbTyping = true; };
+    notes[nt].onblur = function () { S.fbTyping = false; };
+  }
+}
+
+function sendFeedback(id, verdict, note) {
+  S.fbTyping = false;
+  api("/api/feedback", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ task_id: id, verdict: verdict, note: note || "" })
+  }).then(function (r) {
+    var ok = r.body && r.body.ok;
+    S.fb[id] = { done: ok, verdict: verdict };
+    if (!ok) toast((r.body && r.body.message) || "反馈没记上", true);
+    else toast(verdict === "good" ? "记下了" : "记下了，会进自我改进的证据");
+    render();
+  }).catch(function () {
+    S.fb[id] = null; render();
+    toast("反馈发不出去：网关可能没起", true);
+  });
+}
+
+function card(t) {
+  var st = t.state || "queued";
+  var label = LABEL[st] || st;
+  var h = '<div class="msg me"><div class="body"><p>' + esc(t.intent) + "</p></div></div>";
+  h += '<div class="msg bot"><div class="avatar">d</div><div class="body">';
+  if (st === "done") {
+    h += "<p>" + doneText(t) + "</p>";
+  } else if (st === "failed") {
+    h += "<p>没做成。" + (t.stateReason ? esc(t.stateReason) : "") + "</p>";
+  } else if (st === "cancelled") {
+    h += "<p>已取消。</p>";
+  } else if (st === "awaiting_approval") {
+    h += "<p>要你点一下才能继续。</p>";
+  } else {
+    h += '<p>在做<span class="dots"><i></i><i></i><i></i></span></p>';
+  }
+  h += '<div class="meta"><span class="st ' + esc(st) + '">' + esc(label) + "</span>" +
+    (t.id ? '<span class="mono" title="' + esc(t.id) + '">#' + esc(String(t.id).slice(-4)) + "</span>" : "") +
+    "<span>" + hhmm(t.createdAt) + "</span>" +
+    (t.steps ? "<span>" + t.steps + " 步</span>" : "") +
+    (t.spentTokens ? "<span>" + num(t.spentTokens) + " token</span>" : "") +
+    '<a href="#" data-open="' + esc(t.id) + '" style="color:var(--accent);text-decoration:none">' +
+    (S.open[t.id] ? "收起过程" : "看过程") + "</a></div>";
+  if (S.open[t.id]) h += stepsHtml(t.id);
+  h += feedbackHtml(t);
+  h += "</div></div>";
+  return h;
+}
+
+/* 每条回答下面的反馈。点「不对」就地出输入框，写完提交 —— 这条会进账本，
+   自我优化提案时当成证据（用户说的比账本更准）。 */
+function feedbackHtml(t) {
+  var f = S.fb[t.id];
+  if (f && f.done) return '<div class="fb"><span class="say">已记下：' + (f.verdict === "good" ? "这条做对了" : "这条不对") + "</span></div>";
+  if (f && f.open) {
+    return '<div class="fb" data-row="' + esc(t.id) + '">' +
+      '<input class="note" data-note="' + esc(t.id) + '" placeholder="哪里不对？（可不填）">' +
+      '<button data-fbsend="' + esc(t.id) + '">提交</button>' +
+      '<button data-fbcancel="' + esc(t.id) + '">取消</button></div>';
+  }
+  return '<div class="fb" data-row="' + esc(t.id) + '">' +
+    '<button data-good="' + esc(t.id) + '">对了</button>' +
+    '<button data-bad="' + esc(t.id) + '">不对</button></div>';
+}
+
+function doneText(t) {
+  var d = S.detail[t.id];
+  // 详情还没取过就先取一次（以前只在展开「过程」时才取，所以这里永远只有一句「做完了。」）
+  if (!d && t.id) fetchDetail(t.id);
+  if (!d || !d.steps || !d.steps.length) return "做完了。";
+  var last = null, err = null;
+  for (var i = d.steps.length - 1; i >= 0; i--) {
+    var s = d.steps[i];
+    if (!err && s.error) err = s.error;
+    if (!last && s.result) last = s;
+  }
+  var h = "做完了。";
+  if (err) h += "（有一处报了错：" + esc(String(err).slice(0, 80)) + "）";
+  if (last) {
+    var r = String(last.result);
+    h += "<br><span style=\"opacity:.75\">第 " + last.seq + " 步的结果：</span><br>" +
+      '<span class="mono">' + esc(r.length > 300 ? r.slice(0, 300) + "…" : r) + "</span>";
+  }
+  return h;
+}
+
+function stepsHtml(id) {
+  var d = S.detail[id];
+  if (!d) return '<div class="empty" style="padding:8px 0">取过程…</div>';
+  if (!d.steps || !d.steps.length) return '<div class="empty" style="padding:8px 0">一步都没走</div>';
+  var li = d.steps.map(function (s) {
+    return '<li><span class="n">' + s.seq + '</span><span class="t">' + esc(s.tool) + "</span><span>" +
+      (s.status === "ok" || s.status === "done" ? "✓" : esc(s.status)) + "</span>" +
+      (s.error ? '<span class="e">' + esc(String(s.error).slice(0, 120)) + "</span>" : "") + "</li>";
+  }).join("");
+  return '<ul class="steps">' + li + "</ul>";
+}
+
+/* ══ 数据 ══ */
+function loadTasks() {
+  return api("/api/tasks").then(function (r) {
+    if (!r.body || !r.body.ok) { setLive(false, "读不到账本"); return; }
+    S.tasks = r.body.tasks || [];
+    setLive(true, "正常");
+    render();
+    if (atBottom()) scrollBottom();
+  }).catch(function () { setLive(false, "界面服务断了"); });
+}
+
+function loadOverview() {
+  return api("/api/overview").then(function (r) {
+    var d = r.body || {};
+    if (!d.ok) return;
+    $("apBadge").textContent = d.pendingApprovals > 0 ? d.pendingApprovals : "";
+    // 概览里的最近任务只用来补审批计数，列表以 /api/tasks 为准
+  }).catch(function () {});
+}
+
+function fetchDetail(id) {
+  return api("/api/tasks/" + encodeURIComponent(id)).then(function (r) {
+    if (r.body && r.body.ok) { S.detail[id] = r.body; render(); }
+  }).catch(function () {});
+}
+
+function loadApprovals() {
+  return api("/api/approvals").then(function (r) {
+    var d = r.body || {};
+    if (!d.ok) return;
+    var pend = d.pending || [];
+    $("apBadge").textContent = pend.length > 0 ? pend.length : "";
+    // 审计 G5：ds-bot 的通知通道（8797）经常没开，通知发不出去时至少 exe 自己要提醒。
+    var fresh = [];
+    for (var k = 0; k < pend.length; k++) {
+      if (!S.seenAp[pend[k].id]) { S.seenAp[pend[k].id] = 1; fresh.push(pend[k]); }
+    }
+    if (fresh.length) {
+      toast(fresh.length === 1 ? ("有一件事等你点头：" + (fresh[0].title || "")) : ("有 " + fresh.length + " 件事等你点头"));
+    }
+    $("apPending").innerHTML = pend.length
+      ? pend.map(function (a) {
+          var det = a.detail || {};
+          return '<div class="appr" style="margin-bottom:10px"><h4>' + esc(a.title) + "</h4>" +
+            (det.question ? '<div class="q">' + esc(det.question) + "</div>" : "") +
+            (det.detail ? '<div class="q" style="margin-top:6px">' + esc(det.detail).slice(0, 400) + "</div>" : "") +
+            (a.advice ? '<div class="adv">智能审批："' + (a.advice.verdict === "allow" ? "建议同意" : a.advice.verdict === "deny" ? "建议拒绝" : "留给你")
+              + '"（把握 ' + Number(a.advice.confidence || 0).toFixed(2) + "）" + esc(a.advice.why || "") + "</div>" : "") +
+            '<div class="acts"><button class="btn primary" data-ok="' + esc(a.id) + '">同意</button>' +
+            '<button class="btn no" data-no="' + esc(a.id) + '">拒绝</button></div></div>';
+        }).join("")
+      : '<div class="empty">没有等你点头的事</div>';
+    var oks = $("apPending").querySelectorAll("[data-ok]");
+    for (var i = 0; i < oks.length; i++) oks[i].onclick = function () { decide(this.getAttribute("data-ok"), "approved"); };
+    var nos = $("apPending").querySelectorAll("[data-no]");
+    for (var j = 0; j < nos.length; j++) nos[j].onclick = function () { decide(this.getAttribute("data-no"), "rejected"); };
+    $("apRecent").innerHTML = (d.recent || []).length
+      ? "<table><tr><th>事情</th><th>结果</th><th>时间</th></tr>" + d.recent.map(function (a) {
+          return "<tr><td>" + esc(a.title) + "</td><td>" + (a.status === "approved" ? "同意" : "拒绝") +
+            '</td><td class="mono">' + hhmm(a.decided_at) + "</td></tr>";
+        }).join("") + "</table>"
+      : '<div class="empty">还没有决定过</div>';
+  }).catch(function () {});
+}
+
+function loadAuto() {
+  return api("/api/settings").then(function (r) {
+    var d = r.body || {};
+    if (!d.ok) return;
+    $("autoRule").textContent = d.rule || "";
+    var m = d.mode || (d.autoApprove ? "tier4" : "off");
+    $("modeOff").checked = m === "off";
+    $("modeTier4").checked = m === "tier4";
+    $("modeSmart").checked = m === "smart";
+  }).catch(function () {});
+  api("/api/autolog").then(function (r) {
+    var d = r.body || {};
+    if (!d.ok) return;
+    var lines = d.lines || [];
+    $("autoLog").innerHTML = lines.length
+      ? "<table>" + lines.slice(-12).reverse().map(function (x) {
+          return '<tr><td class="mono">' + esc(String(x).slice(0, 160)) + "</td></tr>";
+        }).join("") + "</table>"
+      : '<div class="empty">还没有自动同意的记录</div>';
+  }).catch(function () {});
+}
+
+function loadPatches() {
+  return api("/api/patches").then(function (r) {
+    var d = r.body || {};
+    if (!d.ok) { $("patches").innerHTML = '<div class="empty">读不到补丁清单（网关可能没起）</div>'; return; }
+    var list = d.patches || [];
+    if (!list.length) { $("patches").innerHTML = '<div class="empty">没有待部署的补丁</div>'; return; }
+    $("patches").innerHTML = list.map(function (name) {
+      var id = String(name).replace(/\.patch$/, "");
+      return '<div class="kv"><span class="mono">' + esc(id) + "</span>" +
+        '<button class="btn small" data-deploy="' + esc(id) + '">部署</button></div>';
+    }).join("");
+    var btns = $("patches").querySelectorAll("[data-deploy]");
+    for (var i = 0; i < btns.length; i++) btns[i].onclick = function () { deployPatch(this.getAttribute("data-deploy")); };
+  }).catch(function () {
+    $("patches").innerHTML = '<div class="empty">读不到补丁清单</div>';
+  });
+}
+
+function deployPatch(id) {
+  var ok = window.confirm("部署 " + id + "？\n\n会先备份原文件，然后把改动写进真实源码，再跑一遍全量测试。\n测试不过会自动回滚。部署成功需要重启网关（约 150 秒）才生效。");
+  if (!ok) return;
+  toast("部署中，全量测试要 50 秒左右…");
+  api("/api/deploy", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ patch_id: id })
+  }).then(function (r) {
+    var d = r.body || {};
+    toast(d.reason || (d.ok ? "部署成功" : "部署失败"), !d.ok);
+    loadPatches();
+  }).catch(function (e) {
+    toast("部署请求没发出去：" + e.message, true);
+  });
+}
+
+function loadHealth() {
+  return api("/api/health").then(function (r) {
+    var d = r.body || {};
+    if (!d.ok) { toast("读不到体检数据", true); return; }
+    var steps = 0, fail = 0, tasks = 0, tok = 0, i;
+    for (i = 0; i < (d.stepStates || []).length; i++) {
+      steps += d.stepStates[i].c;
+      if (d.stepStates[i].status === "failed") fail = d.stepStates[i].c;
+    }
+    for (i = 0; i < (d.taskStates || []).length; i++) tasks += d.taskStates[i].c;
+    for (i = 0; i < (d.spend || []).length; i++) tok += d.spend[i].i + d.spend[i].o;
+    $("healthSummary").innerHTML = "<table>" +
+      '<tr><td>总任务</td><td class="mono">' + tasks + "</td></tr>" +
+      '<tr><td>总步数</td><td class="mono">' + steps + "</td></tr>" +
+      '<tr><td>失败步数</td><td class="mono">' + fail + "</td></tr>" +
+      '<tr><td>累计 token</td><td class="mono">' + num(tok) + "</td></tr></table>";
+    $("proposals").innerHTML = (d.proposals || []).length
+      ? (d.proposals || []).map(function (p) {
+          var b = p.payload || {};
+          return '<div class="kv"><span>' + esc(b.title || b.id || b.kind || JSON.stringify(b).slice(0, 100)) +
+            '</span><span class="mono">' + hhmm(p.ts) + "</span></div>" +
+            (b.why ? '<div class="empty" style="padding:2px 0 8px">' + esc(b.why) + "</div>" : "");
+        }).join("")
+      : '<div class="empty">它还没提过改动建议（这段能力默认关）</div>';
+    $("errTable").innerHTML = (d.errors || []).length
+      ? "<table><tr><th>工具</th><th>错误</th><th>次数</th></tr>" + d.errors.map(function (e) {
+          return "<tr><td>" + esc(e.tool) + '<td class="mono">' + esc(e.e) + "</td><td>" + e.c + "</td></tr>";
+        }).join("") + "</table>"
+      : '<div class="empty">没有失败记录</div>';
+    $("spendTable").innerHTML = (d.spend || []).length
+      ? "<table><tr><th>模型</th><th>次数</th><th>输入</th><th>输出</th></tr>" + d.spend.map(function (s) {
+          return "<tr><td>" + esc(s.model) + "</td><td>" + s.runs + '<td class="mono">' + num(s.i) +
+            '</td><td class="mono">' + num(s.o) + "</td></tr>";
+        }).join("") + "</table>"
+      : '<div class="empty">还没有花费记录</div>';
+    $("ledgerNote").textContent = d.ledgerError ? "告警：" + d.ledgerError : "账本正常";
+  }).catch(function () {});
+}
+
+/* ══ 动作 ══ */
+function send() {
+  var el = $("say");
+  var intent = el.value.trim();
+  if (!intent || S.sending) return;
+  S.sending = true;
+  $("send").disabled = true;
+  api("/api/tasks", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ intent: intent, workspace: $("workspace").value.trim(), profile: $("profile").value })
+  }).then(function (r) {
+    S.sending = false;
+    $("send").disabled = false;
+    if (r.body && r.body.ok) {
+      el.value = ""; autoGrow();
+      S.tasks.push({
+        id: r.body.task_id, intent: intent, state: "queued", stateLabel: "排队中",
+        steps: 0, spentTokens: 0, createdAt: new Date().toISOString()
+      });
+      // 回执（审计 G4）：以前只有失败才有提示，接下任务什么都不说，用户不知道到底提交上没有
+      toast("接下来了：" + r.body.task_id);
+      render(); scrollBottom();
+      pollSoon();
+    } else {
+      toast((r.body && (r.body.message || r.body.error)) || "没接下来", true);
+    }
+  }).catch(function (e) {
+    S.sending = false;
+    $("send").disabled = false;
+    toast("发不出去：" + e.message, true);
+  });
+}
+
+function decide(id, decision) {
+  api("/api/approvals/" + encodeURIComponent(id) + "/decide", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ decision: decision })
+  }).then(function (r) {
+    toast((r.body && r.body.message) || (r.body && r.body.ok ? "记下了" : "没记上"), !(r.body && r.body.ok));
+    loadApprovals(); loadTasks();
+  });
+}
+
+/* ══ 滚动 ══ */
+function atBottom() {
+  var m = $("scroller");
+  return m.scrollHeight - m.scrollTop - m.clientHeight < 80;
+}
+function scrollBottom() {
+  var m = $("scroller");
+  m.scrollTop = m.scrollHeight;
+}
+
+/* ══ 输入框自增高 ══ */
+function autoGrow() {
+  var t = $("say");
+  t.style.height = "auto";
+  t.style.height = Math.min(t.scrollHeight, 190) + "px";
+}
+
+function setLive(ok, text) {
+  var el = $("live");
+  el.className = "live " + (ok ? "on" : "bad");
+  $("liveText").textContent = text;
+}
+
+/* ══ 轮询：只有在有任务在跑的时候才密一点 ══ */
+var pollTimer = null;
+function pollSoon() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(function () {
+    loadTasks().then(function () {
+      var busy = false;
+      for (var i = 0; i < S.tasks.length; i++) {
+        var s = S.tasks[i].state;
+        if (s !== "done" && s !== "failed" && s !== "cancelled") busy = true;
+      }
+      if (busy) pollSoon();
+    });
+  }, 2500);
+}
+
+/* ══ 绑定 ══ */
+$("send").onclick = send;
+$("say").addEventListener("keydown", function (e) {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+$("say").addEventListener("input", autoGrow);
+$("btnOpts").onclick = function () { $("opts").classList.toggle("on"); };
+$("useDesktop").onclick = function () { $("workspace").value = "C:/Users/1/Desktop"; };
+
+/* 自动同意：读桥的 /settings（0=关，1..4=该档及以下不用人点）。
+   真正的开关在 dot-core 里，改完 20 秒生效，关掉这个窗口也照样生效。 */
+function loadAutoApprove() {
+  api("/api/autoapprove").then(function (r) {
+    var v = r.body && r.body.auto_approve_max_tier;
+    if (v === undefined || v === null) return;
+    $("autoApprove").value = String(v);
+  }).catch(function () { /* 宿主没回话就保持默认 */ });
+}
+$("autoApprove").onchange = function () {
+  var v = Number($("autoApprove").value);
+  api("/api/autoapprove", { method: "POST", body: JSON.stringify({ auto_approve_max_tier: v }) })
+    .then(function (r) {
+      if (r.status === 200) {
+        toast(v === 0 ? "自动同意已关" : "自动同意：".concat(v, " 档及以下不用你点"));
+      } else {
+        toast((r.body && r.body.message) || "没改成", true);
+        loadAutoApprove();
+      }
+    })
+    .catch(function () { toast("没改成（宿主没回话）", true); });
+};
+$("btnApprovals").onclick = function () {
+  $("sheetApprovals").classList.add("on"); loadApprovals(); loadAuto();
+};
+$("btnHealth").onclick = function () { $("sheetHealth").classList.add("on"); loadHealth(); loadPatches(); };
+$("reloadHealth").onclick = loadHealth;
+var closers = document.querySelectorAll("[data-close]");
+for (var ci = 0; ci < closers.length; ci++) closers[ci].onclick = function () {
+  $(this.getAttribute("data-close")).classList.remove("on");
+};
+var radios = document.querySelectorAll('input[name="mode"]');
+for (var ri = 0; ri < radios.length; ri++) radios[ri].onchange = function () {
+  var want = this.value;
+  api("/api/settings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode: want }) })
+    .then(function (r) {
+      toast(want === "off" ? "改回全都问我" : want === "tier4" ? "第 4 档以内不再问" : "智能审批已开", !(r.body && r.body.ok));
+      loadAuto();
+      // 这条老开关只管 exe：它开着 exe 去账本里替你点。现在同一个意思在 dot-core 里也有一份
+      // （approvals.auto_approve_max_tier），关掉 exe 也生效，所以两边一起改，别让它们打架。
+      if (want === "off" || want === "tier4") {
+        api("/api/autoapprove", { method: "POST", body: JSON.stringify({ auto_approve_max_tier: want === "off" ? 0 : 4 }) })
+          .then(function () { loadAutoApprove(); })
+          .catch(function () { /* 老开关已经改好了，dot 那边没同步只是少一层 */ });
+      }
+    });
+};
+
+document.addEventListener("keydown", function (e) {
+  if (e.key === "Escape") {
+    $("sheetApprovals").classList.remove("on");
+    $("sheetHealth").classList.remove("on");
+  }
+});
+
+/* 首屏 */
+loadAutoApprove();
+loadTasks().then(scrollBottom);
+loadOverview();
+loadApprovals().then(loadAuto);
+setInterval(function () {
+  if (document.hidden) return;
+  loadTasks();
+  loadOverview();
+  if ($("sheetApprovals").classList.contains("on")) loadApprovals();
+}, 5000);
+</script>
+</body></html>

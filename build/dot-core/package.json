@@ -1,0 +1,28 @@
+{
+  "name": "dot-core",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "dot 合并方案的大脑插件：账本是唯一写入口，手与上下文都从这里接。allbot 走 jiti 直载 TypeScript，源码直载、不打包（方案 B.4）。",
+  "main": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "allbot": {
+    "extensions": ["./index.ts"]
+  },
+  "dot": {
+    "pluginId": "dot-core",
+    "entry": "./index.ts",
+    "delivery": "jiti-direct-typescript",
+    "typecheck": "tsc --noEmit",
+    "moduleDirs": ["src/ledger", "src/gate", "src/bridge", "src/hands", "src/context", "src/dispatch", "src/say", "src/selfeval", "src/selfimprove"]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "cd ../.. && node build/tools/run-tests.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

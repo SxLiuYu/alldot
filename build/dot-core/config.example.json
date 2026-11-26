@@ -1,0 +1,78 @@
+{
+  "vision": {
+    "enabled": false
+  },
+  "approvals": {
+    "inline_wait_ms": 90000,
+    "ttl_hours": 24,
+    "auto_approve_max_tier": 0
+  },
+  "desktop": {
+    "batch_actions": 10,
+    "exclude_processes": [],
+    "human_only_apps": [
+      "Weixin",
+      "WeChat"
+    ],
+    "mcp_url": "http://127.0.0.1:8000/mcp"
+  },
+  "wechat": {
+    "enabled": true,
+    "mcp_url": "http://127.0.0.1:8933/mcp"
+  },
+  "browser": {
+    "captcha": {
+      "keywords": [
+        "验证码",
+        "captcha",
+        "滑块",
+        "人机验证"
+      ]
+    },
+    "logged_mcp_url": "http://localhost:8931/mcp",
+    "clean_mcp_url": "http://localhost:8932/mcp",
+    "clean_profile": null
+  },
+  "budget": {
+    "tokens": 2000000
+  },
+  "keepalive": {
+    "probe_interval_min": 5,
+    "probe_tiers": [
+      "cheap",
+      "balanced",
+      "strong"
+    ],
+    "disk": {
+      "warn_gb": 5,
+      "red_gb": 2,
+      "pause_gb": 0.8,
+      "resume_gb": 1,
+      "hysteresis_min": 10
+    },
+    "artifacts_max_gb": 2,
+    "snapshots_max_gb": 5,
+    "backups_max_gb": 5,
+    "guard_log_max_mb": 50
+  },
+  "exec": {
+    "whitelist": []
+  },
+  "dispatch": {
+    "enabled": true,
+    "interval_ms": 5000,
+    "session_timeout_ms": 600000,
+    "max_concurrent": 1,
+    "lock_ttl_ms": 900000
+  },
+  "practice": {
+    "root": null
+  },
+  "say": {
+    "enabled": false
+  },
+  "self_improve": {
+    "enabled": true,
+    "max_proposals_per_day": 2
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "dot-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "dot 的桥与只读状态页（127.0.0.1:8799）。源码直载 dot-core 的 TypeScript，不打包。",
+  "scripts": {
+    "start": "node index.mjs"
+  }
+}

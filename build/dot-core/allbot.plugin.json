@@ -1,0 +1,279 @@
+{
+  "id": "dot-core",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "vision": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "approvals": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "inline_wait_ms": {
+            "type": "number",
+            "default": 90000
+          },
+          "ttl_hours": {
+            "type": "number",
+            "default": 24
+          },
+          "auto_approve_max_tier": {
+            "type": "number",
+            "default": 0
+          }
+        }
+      },
+      "desktop": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "batch_actions": {
+            "type": "number",
+            "default": 10
+          },
+          "exclude_processes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "human_only_apps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "Weixin",
+              "WeChat"
+            ]
+          },
+          "mcp_url": {
+            "type": "string",
+            "default": "http://127.0.0.1:8000/mcp",
+            "description": "Windows-MCP 的 streamable-HTTP 地址"
+          }
+        }
+      },
+      "browser": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "captcha": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "keywords": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [
+                  "验证码",
+                  "captcha",
+                  "滑块",
+                  "人机验证"
+                ],
+                "description": "snapshot/截图里命中就停手交还人手的验证码关键词"
+              }
+            }
+          },
+          "logged_mcp_url": {
+            "type": "string",
+            "default": "http://localhost:8931/mcp"
+          },
+          "clean_mcp_url": {
+            "type": "string",
+            "default": "http://localhost:8932/mcp"
+          },
+          "clean_profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null,
+            "description": "干净浏览器 profile；null=--isolated，不留任何状态"
+          }
+        }
+      },
+      "budget": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tokens": {
+            "type": "number",
+            "default": 2000000
+          }
+        }
+      },
+      "keepalive": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "probe_interval_min": {
+            "type": "number",
+            "default": 5
+          },
+          "probe_tiers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "cheap",
+              "balanced",
+              "strong"
+            ]
+          },
+          "disk": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "warn_gb": {
+                "type": "number",
+                "default": 5
+              },
+              "red_gb": {
+                "type": "number",
+                "default": 2
+              },
+              "pause_gb": {
+                "type": "number",
+                "default": 0.8
+              },
+              "resume_gb": {
+                "type": "number",
+                "default": 1
+              },
+              "hysteresis_min": {
+                "type": "number",
+                "default": 10
+              }
+            }
+          },
+          "artifacts_max_gb": {
+            "type": "number",
+            "default": 2
+          },
+          "snapshots_max_gb": {
+            "type": "number",
+            "default": 5
+          },
+          "backups_max_gb": {
+            "type": "number",
+            "default": 5
+          },
+          "guard_log_max_mb": {
+            "type": "number",
+            "default": 50
+          }
+        }
+      },
+      "exec": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "whitelist": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          }
+        }
+      },
+      "dispatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "interval_ms": {
+            "type": "number",
+            "default": 5000
+          },
+          "session_timeout_ms": {
+            "type": "number",
+            "default": 600000
+          },
+          "max_concurrent": {
+            "type": "number",
+            "default": 1
+          },
+          "lock_ttl_ms": {
+            "type": "number",
+            "default": 900000
+          }
+        }
+      },
+      "practice": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "root": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null,
+            "description": "练习文件夹绝对路径；null=没配，最小那只手拒绝执行"
+          }
+        }
+      },
+      "say": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "说人话改写层开关；默认关，关着时桥的卡片逐字不动"
+          }
+        }
+      },
+      "self_improve": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "自我优化开关；默认开（2026-11-25 按用户要求改为默认开），关着时只允许体检，不许出提案、不许写补丁。开着也只写账本提案与请示卡，绝不改源码"
+          },
+          "max_proposals_per_day": {
+            "type": "number",
+            "default": 2,
+            "description": "每天最多落几条提案（按 UTC 日期算）"
+          }
+        }
+      },
+      "wechat": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "微信那只手（wechat-mcp 的 HTTP 入口）默认开；服务没起时调了就是干不了"
+          },
+          "mcp_url": {
+            "type": "string",
+            "default": "http://127.0.0.1:8933/mcp",
+            "description": "wechat-mcp 的 streamable-HTTP 地址（默认 http://127.0.0.1:8933/mcp）"
+          }
+        }
+      }
+    }
+  }
+}

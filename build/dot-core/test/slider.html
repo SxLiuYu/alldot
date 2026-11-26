@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>dot 验证码滑块（captcha 验收）</title>
+<style>
+  body { font: 16px/1.6 "Microsoft YaHei", sans-serif; max-width: 400px; margin: 60px auto; text-align: center; }
+  .slider-wrap { position: relative; width: 320px; height: 44px; background: #e0e0e0; border-radius: 22px; margin: 24px auto; overflow: hidden; }
+  .slider-track { position: absolute; top: 0; left: 0; height: 100%; width: 0; background: #1976d2; border-radius: 22px; transition: width 0.1s; }
+  .slider-btn { position: absolute; top: 2px; left: 2px; width: 40px; height: 40px; background: #fff; border-radius: 50%; cursor: grab; box-shadow: 0 2px 4px rgba(0,0,0,.2); user-select: none; }
+  .slider-btn:active { cursor: grabbing; }
+  .hint { color: #666; font-size: 14px; }
+  #result { margin-top: 16px; padding: 12px; border-radius: 4px; display: none; }
+  #result.ok { background: #e8f5e9; display: block; }
+  #result.fail { background: #fff3e0; display: block; }
+</style>
+</head>
+<body>
+<h2>滑块验证码</h2>
+<p class="hint">按住滑块拖到最右边完成验证。</p>
+<div class="slider-wrap" id="wrap">
+  <div class="slider-track" id="track"></div>
+  <div class="slider-btn" id="btn">→</div>
+</div>
+<div id="result"></div>
+<script>
+const btn = document.getElementById('btn');
+const track = document.getElementById('track');
+const wrap = document.getElementById('wrap');
+const result = document.getElementById('result');
+const max = 320 - 44;
+let dragging = false;
+
+btn.addEventListener('mousedown', (e) => { dragging = true; e.preventDefault(); });
+document.addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  const rect = wrap.getBoundingClientRect();
+  let x = e.clientX - rect.left - 22;
+  x = Math.max(0, Math.min(x, max));
+  btn.style.left = x + 2 + 'px';
+  track.style.width = x + 44 + 'px';
+  if (x >= max - 2) {
+    dragging = false;
+    result.className = 'ok';
+    result.textContent = '验证通过';
+  }
+});
+document.addEventListener('mouseup', () => {
+  if (dragging) {
+    dragging = false;
+    // 没拖到最右：弹回
+    btn.style.left = '2px';
+    track.style.width = '0';
+    result.className = 'fail';
+    result.textContent = '验证失败，请拖到最右边';
+  }
+});
+</script>
+</body>
+</html>

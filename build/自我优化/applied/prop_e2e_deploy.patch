@@ -1,0 +1,7 @@
+--- a/build/dot-core/src/dispatch/prompt.ts
++++ b/build/dot-core/src/dispatch/prompt.ts
+@@ -56,3 +56,4 @@
+ 
+   return { message: lines.join("\n"), extraSystemPrompt };
+ }
++// 自我优化端到端验证：这一行是 deploy 演练加的无害注释，回滚/验收后可以删。
