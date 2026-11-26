@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>alldot — 个人 AI 助手</title>
+<style>
+:root {
+  --bg: #0f0f0f;
+  --surface: #1a1a1a;
+  --surface2: #242424;
+  --border: #333;
+  --text: #e8e8e8;
+  --text2: #999;
+  --accent: #4a9eff;
+  --accent2: #2d7dd2;
+  --success: #4caf50;
+  --warning: #ff9800;
+  --error: #f44336;
+  --radius: 12px;
+  --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --mono: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ── Sidebar ── */
+.sidebar {
+  width: 280px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.sidebar-header p {
+  font-size: 12px;
+  color: var(--text2);
+  margin-top: 4px;
+}
+
+.task-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.task-item {
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: background 0.15s;
+}
+
+.task-item:hover { background: var(--surface2); }
+.task-item.active { background: var(--surface2); border: 1px solid var(--accent); }
+
+.task-item .title {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-item .meta {
+  font-size: 11px;
+  color: var(--text2);
+  margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.task-item .status {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+}
+
+.status-running { background: var(--accent); }
+.status-done { background: var(--success); }
+.status-failed { background: var(--error); }
+.status-pending { background: var(--warning); }
+
+.new-task-btn {
+  margin: 8px;
+  padding: 10px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.new-task-btn:hover { background: var(--accent2); }
+
+/* ── Main ── */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-header {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.chat-header h2 {
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.chat-header .badge {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: var(--surface2);
+  color: var(--text2);
+}
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.message {
+  display: flex;
+  gap: 12px;
+  max-width: 85%;
+}
+
+.message.user {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+
+.avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.message.user .avatar { background: var(--accent); }
+.message.assistant .avatar { background: var(--surface2); }
+
+.bubble {
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.message.user .bubble {
+  background: var(--accent);
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+.message.assistant .bubble {
+  background: var(--surface2);
+  border-bottom-left-radius: 4px;
+}
+
+.message.assistant .bubble code {
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.message.assistant .bubble pre {
+  background: var(--bg);
+  padding: 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.message.assistant .bubble pre code {
+  background: none;
+  padding: 0;
+}
+
+/* Progress indicator */
+.progress {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin: 8px 0;
+}
+
+.progress-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.progress-title .spinner {
+  width: 16px; height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.progress-steps {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.progress-steps li {
+  font-size: 12px;
+  color: var(--text2);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.progress-steps li.done { color: var(--success); }
+.progress-steps li.active { color: var(--accent); }
+.progress-steps li.failed { color: var(--error); }
+
+/* Milestone tracker */
+.milestones {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin: 8px 0;
+}
+
+.milestones h3 {
+  font-size: 13px;
+  margin-bottom: 10px;
+  color: var(--text2);
+}
+
+.milestone {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.milestone:last-child { border-bottom: none; }
+
+.milestone .dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.milestone.done .dot { background: var(--success); }
+.milestone.active .dot { background: var(--accent); animation: pulse 2s infinite; }
+.milestone.pending .dot { background: var(--border); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ── Input ── */
+.input-area {
+  padding: 16px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.input-box {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.input-box textarea {
+  flex: 1;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 12px 16px;
+  font-size: 14px;
+  font-family: var(--font);
+  resize: none;
+  min-height: 48px;
+  max-height: 150px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.input-box textarea:focus { border-color: var(--accent); }
+
+.send-btn {
+  width: 48px;
+  height: 48px;
+  border: none;
+  background: var(--accent);
+  color: white;
+  border-radius: var(--radius);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  transition: background 0.15s;
+}
+
+.send-btn:hover { background: var(--accent2); }
+.send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.input-hint {
+  font-size: 11px;
+  color: var(--text2);
+  margin-top: 6px;
+}
+
+/* ── Approval card ── */
+.approval-card {
+  background: var(--surface);
+  border: 2px solid var(--warning);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin: 8px 0;
+}
+
+.approval-card h4 {
+  font-size: 14px;
+  color: var(--warning);
+  margin-bottom: 8px;
+}
+
+.approval-card .detail {
+  font-size: 13px;
+  color: var(--text2);
+  margin-bottom: 12px;
+  padding: 10px;
+  background: var(--bg);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.approval-card .actions {
+  display: flex;
+  gap: 10px;
+}
+
+.approval-card .btn-approve {
+  padding: 8px 20px;
+  background: var(--success);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.approval-card .btn-reject {
+  padding: 8px 20px;
+  background: var(--error);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text2); }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="sidebar-header">
+    <h1>alldot</h1>
+    <p>个人 AI 助手 — 说一句话，它动手做</p>
+  </div>
+  <button class="new-task-btn" onclick="newTask()">+ 新任务</button>
+  <div class="task-list" id="taskList"></div>
+</div>
+
+<div class="main">
+  <div class="chat-header">
+    <h2 id="chatTitle">新对话</h2>
+    <div class="badge" id="statusBadge">就绪</div>
+  </div>
+  <div class="messages" id="messages"></div>
+  <div class="input-area">
+    <div class="input-box">
+      <textarea id="input" placeholder="描述你的任务… 例如：把下载文件夹的 PDF 按月份归档" rows="1" onkeydown="handleKey(event)"></textarea>
+      <button class="send-btn" id="sendBtn" onclick="send()">↑</button>
+    </div>
+    <div class="input-hint">Enter 发送 · Shift+Enter 换行 · 支持自然语言描述任务</div>
+  </div>
+</div>
+
+<script>
+const API_BASE = '';
+let bridgeToken = '';
+let currentTaskId = null;
+let isProcessing = false;
+
+// 读桥 token
+async function init() {
+  try {
+    const resp = await fetch('/api/token');
+    const data = await resp.json();
+    bridgeToken = data.token || '';
+  } catch (e) {
+    // 尝试从 localStorage
+    bridgeToken = localStorage.getItem('dot-bridge-token') || '';
+  }
+  loadTaskList();
+}
+
+function newTask() {
+  currentTaskId = null;
+  document.getElementById('chatTitle').textContent = '新对话';
+  document.getElementById('messages').innerHTML = `
+    <div class="message assistant">
+      <div class="avatar">🤖</div>
+      <div class="bubble">你好！我是 alldot。描述你想做的事，我来动手。<br><br>比如：<br>• 把下载文件夹的 PDF 按月份归档<br>• 打开某个网页，填个表单<br>• 整理桌面文件<br>• 监控某个网页的变化</div>
+    </div>
+  `;
+}
+
+async function send() {
+  const input = document.getElementById('input');
+  const text = input.value.trim();
+  if (!text || isProcessing) return;
+
+  input.value = '';
+  isProcessing = true;
+  document.getElementById('sendBtn').disabled = true;
+  document.getElementById('statusBadge').textContent = '工作中…';
+
+  // 显示用户消息
+  appendMessage('user', text);
+
+  // 显示进度
+  const progressEl = appendProgress();
+
+  try {
+    // 调桥 API 创建任务
+    const resp = await fetch(API_BASE + '/mcp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-dot-bridge-token': bridgeToken,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'tools/call',
+        params: {
+          name: 'brain_task',
+          arguments: {
+            intent: text,
+            declared: {},
+          },
+        },
+      }),
+    });
+
+    const data = await resp.json();
+    const resultText = data?.result?.content?.[0]?.text || JSON.stringify(data);
+
+    // 更新进度
+    updateProgress(progressEl, 'done', '任务已创建，开始执行…');
+
+    // 显示结果
+    appendMessage('assistant', resultText);
+
+    // 刷新任务列表
+    loadTaskList();
+
+  } catch (e) {
+    updateProgress(progressEl, 'failed', '出错了：' + e.message);
+    appendMessage('assistant', '抱歉，出错了：' + e.message);
+  }
+
+  isProcessing = false;
+  document.getElementById('sendBtn').disabled = false;
+  document.getElementById('statusBadge').textContent = '就绪';
+}
+
+function appendMessage(role, text) {
+  const messages = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = 'message ' + role;
+
+  // 简单 Markdown 渲染
+  let html = text
+    .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\n/g, '<br>');
+
+  div.innerHTML = `
+    <div class="avatar">${role === 'user' ? '👤' : '🤖'}</div>
+    <div class="bubble">${html}</div>
+  `;
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function appendProgress() {
+  const messages = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = 'progress';
+  div.innerHTML = `
+    <div class="progress-title">
+      <div class="spinner"></div>
+      <span>正在处理…</span>
+    </div>
+    <ul class="progress-steps">
+      <li class="active">▸ 理解任务中</li>
+    </ul>
+  `;
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+  return div;
+}
+
+function updateProgress(el, state, text) {
+  const steps = el.querySelector('.progress-steps');
+  const title = el.querySelector('.progress-title span');
+
+  if (state === 'done') {
+    title.textContent = '完成';
+    el.querySelector('.spinner').style.display = 'none';
+    steps.innerHTML = `<li class="done">✓ ${text}</li>`;
+  } else if (state === 'failed') {
+    title.textContent = '失败';
+    el.querySelector('.spinner').style.display = 'none';
+    steps.innerHTML = `<li class="failed">✗ ${text}</li>`;
+  } else {
+    steps.innerHTML += `<li class="active">▸ ${text}</li>`;
+  }
+}
+
+async function loadTaskList() {
+  try {
+    const resp = await fetch(API_BASE + '/mcp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-dot-bridge-token': bridgeToken,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: Date.now(),
+        method: 'tools/call',
+        params: {
+          name: 'brain_status',
+          arguments: { task_id: '*' },
+        },
+      }),
+    });
+    const data = await resp.json();
+    // 解析任务列表（简化版）
+    const text = data?.result?.content?.[0]?.text || '';
+    const list = document.getElementById('taskList');
+    list.innerHTML = '';
+    // 显示几条最近的（从 text 里解析）
+    if (text.includes('task_')) {
+      const matches = text.match(/【任务 (task_\w+)】(.+?)$/gm) || [];
+      for (const m of matches.slice(0, 10)) {
+        const idMatch = /task_(\w+)/.exec(m);
+        const title = m.replace(/【任务 task_\w+】/, '').slice(0, 40);
+        const item = document.createElement('div');
+        item.className = 'task-item';
+        item.innerHTML = `
+          <div class="title"><span class="status status-running"></span>${title || '任务'}</div>
+          <div class="meta"><span>${idMatch ? idMatch[1].slice(0, 8) : ''}</span></div>
+        `;
+        list.appendChild(item);
+      }
+    }
+  } catch (e) {
+    // 静默失败
+  }
+}
+
+function handleKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+}
+
+// 自动调整输入框高度
+document.getElementById('input').addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 150) + 'px';
+});
+
+init();
+</script>
+</body>
+</html>

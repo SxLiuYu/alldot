@@ -698,7 +698,19 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
           log("warn", `任务 ${task.id} 自动拆里程碑失败：${(err as Error).message}`);
         }
       }
-      runs.set(runId, { promise: runLoop(task, params.extraSystemPrompt ?? "") });
+      // 跨会话记忆：注入用户偏好和相关经验（对标 Muse persistent memory）
+      let memoryContext = "";
+      try {
+        const { getMemoryStore, buildMemoryContext } = await import("../memory/index.ts");
+        const store = getMemoryStore();
+        memoryContext = buildMemoryContext(store, task.intent ?? "");
+        if (memoryContext !== "") {
+          log("info", `任务 ${task.id} 注入记忆上下文（${store.count()} 条记忆）`);
+        }
+      } catch { /* 记忆模块不可用不影响任务执行 */ }
+
+      const fullExtra = (params.extraSystemPrompt ?? "") + memoryContext;
+      runs.set(runId, { promise: runLoop(task, fullExtra) });
       return { runId };
     },
     async waitForRun(params) {

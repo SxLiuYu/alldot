@@ -15,7 +15,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import {
@@ -583,6 +583,22 @@ export function createBridgeService(opts: BridgeServiceOptions = {}): BridgeServ
         return;
       }
       await handleFeedback(req, res);
+      return;
+    }
+
+    if (path === "/chat") {
+      if (method !== "GET" && method !== "HEAD") {
+        sendEmpty(res, 405, { Allow: "GET" });
+        return;
+      }
+      // Web 聊天界面
+      const chatPath = new URL("./chat.html", import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1");
+      try {
+        const html = readFileSync(chatPath, "utf8");
+        sendHtml(res, 200, html);
+      } catch {
+        sendHtml(res, 404, "<h1>chat.html not found</h1>");
+      }
       return;
     }
 
