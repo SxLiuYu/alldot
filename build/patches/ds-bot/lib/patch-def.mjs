@@ -57,17 +57,17 @@ export const REFUSAL_NEW = [
 
 // 补丁 A-2：文件尾函数。按 B.1 原样落地，fs 的 ESM import 加在文件顶部
 // （单独一对 // dot:fs-import 标记，不属于三处 // dot: 业务标记对）。
-// 名单文件只覆盖 6 个说话工具；4 个桥工具写死在 DOT_BRAIN；读不到名单文件时
+// 名单文件只覆盖 6 个说话工具；5 个桥工具写死在 DOT_BRAIN；读不到名单文件时
 // fail-closed 到内置 DOT_MOUTH。每次拒绝追加一行到 GUARD_LOG_PATH。
 export const FS_IMPORT_ANCHOR = "import { randomUUID } from 'node:crypto'";
 export const FS_IMPORT_INSERT = `${FS_IMPORT_ANCHOR}\n// dot:fs-import (begin)\nimport { readFileSync, appendFileSync, statSync, renameSync, truncateSync } from 'node:fs'\n// dot:fs-import (end)`;
 export const TAIL_INSERT = `// dot:no-hands (begin)
-// 机器人只留嘴：允许名单外的工具一律拒绝。名单文件 ~/.dsh/plugins/dot-bot-policy/policy.json 只覆盖下面 6 个说话工具；4 个桥工具写死在 DOT_BRAIN，不走名单文件，漏写或写坏也耽误不了找大脑。
+// 机器人只留嘴：允许名单外的工具一律拒绝。名单文件 ~/.dsh/plugins/dot-bot-policy/policy.json 只覆盖下面 6 个说话工具；5 个桥工具写死在 DOT_BRAIN，不走名单文件，漏写或写坏也耽误不了找大脑。
 const DOT_MOUTH = new Set(['ask_user', 'show_view', 'list_bots', 'message_bot', 'group_goal', 'read_own_chat'])
-const DOT_BRAIN = new Set(['mcp__brain__brain_task', 'mcp__brain__brain_status', 'mcp__brain__brain_answer', 'mcp__brain__brain_cancel'])
+const DOT_BRAIN = new Set(['mcp__brain__brain_task', 'mcp__brain__brain_status', 'mcp__brain__brain_answer', 'mcp__brain__brain_cancel', 'mcp__brain__brain_reply'])
 const DOT_MOUTH_FILE = 'C:/Users/1/.dsh/plugins/dot-bot-policy/policy.json'
 const DOT_GUARD_LOG = 'C:/Users/1/.dsh/bot/dot-guard.jsonl'
-const DOT_NO_HANDS = 'This Bot has no hands. Only chat, ask_user, show_view and mcp__brain__brain_task, mcp__brain__brain_status, mcp__brain__brain_answer, mcp__brain__brain_cancel are available. Reply to the user, then call mcp__brain__brain_task to hand the work to the brain.'
+const DOT_NO_HANDS = 'This Bot has no hands. Only chat, ask_user, show_view and mcp__brain__brain_task, mcp__brain__brain_status, mcp__brain__brain_answer, mcp__brain__brain_cancel, mcp__brain__brain_reply are available. Reply to the user, then call mcp__brain__brain_task to hand the work to the brain.'
 let dotMouth = DOT_MOUTH, dotMouthAt = 0
 function dotRefreshMouth() {
   const now = Date.now()
@@ -115,8 +115,8 @@ export const TOOLS_102 = `ask_user, ask_user_question, attach_capability, bot_fo
   .split(",")
   .map((s) => s.trim());
 
-// B.1 允许名单：102 内的 6 个说话工具。4 个 brain_* 不在 102 内（加能力后出现），
-// ③ 断言 6 放行 / 96 拒，另单独断言 4 个桥工具也放行。
+// B.1 允许名单：102 内的 6 个说话工具。5 个 brain_* 不在 102 内（加能力后出现），
+// ③ 断言 6 放行 / 96 拒，另单独断言 5 个桥工具也放行。
 export const MOUTH_ALLOW = [
   "ask_user",
   "show_view",
@@ -130,6 +130,7 @@ export const BRAIN_ALLOW = [
   "mcp__brain__brain_status",
   "mcp__brain__brain_answer",
   "mcp__brain__brain_cancel",
+  "mcp__brain__brain_reply",
 ];
 
 export function sha256(text) {

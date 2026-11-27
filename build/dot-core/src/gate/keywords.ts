@@ -55,7 +55,7 @@ export const IDENTITY_MONEY = wordSet(
     "login", "logout", "password", "passwd", "captcha", "otp", "2fa", "face", "fingerprint",
     "sms", "biometric", "pay", "payment", "checkout", "buy",
   ],
-  ["支付", "付款", "登录", "密码", "验证码", "人脸", "短信", "指纹"],
+  ["支付", "付款", "登录", "密码", "验证码", "人脸", "短信", "指纹", "结算", "购买", "买单"],
 );
 
 /** 6 档危险：删除、装卸、系统设置、注册表、凭据、杀进程。 */

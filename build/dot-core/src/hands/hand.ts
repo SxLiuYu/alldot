@@ -34,6 +34,7 @@ import {
   findOpenApprovalBySubjectKey,
   findSucceededStepBySubjectKey,
   getApproval,
+  getArtifact,
   getTask,
   markApprovalExecuted,
   markApprovalExecuting,
@@ -83,6 +84,48 @@ export const DOT_HAND_TOOL_NAMES: readonly string[] = Object.freeze([
 ]);
 /** 返回给模型的正文上限（A.10：手的输出由我们的代码截短）。 */
 export const HAND_TEXT_LIMIT = 4000;
+
+/** 崩溃恢复跳过重做时，回带给模型的上一次结果正文上限。 */
+const PRIOR_TEXT_CHARS = 1500;
+
+/**
+ * 上一步的结果正文（给「同一步之前已经成功过」那条提示用）。
+ * 结果 artifact 是 JSON（{ok, action, data:{path/cmd/stdout…}}），这里挑对模型有用的几个字段；
+ * 不是 JSON 就当纯文本截一段。
+ */
+function priorResultText(db: LedgerDb, ref: string | null): string {
+  if (ref === null) return "";
+  try {
+    const art = getArtifact(db, ref);
+    if (!art.found || art.content == null) return "";
+    const raw = String(art.content);
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      // 优先用 summary：那是模型当时看到的正文（结果 artifact 里现在会存一份）。
+      const summary = parsed["summary"];
+      if (typeof summary === "string" && summary.trim() !== "") return summary.slice(0, PRIOR_TEXT_CHARS);
+      const data = parsed["data"];
+      if (data !== null && typeof data === "object" && !Array.isArray(data)) {
+        const d = data as Record<string, unknown>;
+        const bits: string[] = [];
+        for (const key of ["path", "cmd", "action"]) {
+          const v = d[key];
+          if (typeof v === "string" && v.trim() !== "") bits.push(`${key}: ${v}`);
+        }
+        for (const key of ["stdout", "text"]) {
+          const v = d[key];
+          if (typeof v === "string" && v.trim() !== "") bits.push(v);
+        }
+        if (bits.length > 0) return bits.join("\n").slice(0, PRIOR_TEXT_CHARS);
+      }
+    } catch {
+      // 不是 JSON：下面按原文给
+    }
+    return raw.slice(0, PRIOR_TEXT_CHARS);
+  } catch {
+    return "";
+  }
+}
 
 const TERMINAL_TASK_STATES = new Set(["done", "failed", "cancelled"]);
 
@@ -589,6 +632,10 @@ export async function runHandShell<C>(deps: HandDeps, req: HandRequest, spec: Ha
     const prior = findSucceededStepBySubjectKey(deps.db, task.id, subjectKey);
     if (prior !== null) {
       const note = `崩溃恢复：同一步之前已经成功过（seq ${prior.seq}），没有重做`;
+      // 只回一句「结果同上一次」模型是接不上的：它要的是内容，拿不到就换个写法再问一遍
+      // （2026-11-27 真机上同一条任务在 epoch 3 里连着重试 cat / ls / rg --files 十几步）。
+      // 所以把上次的结果正文带上。
+      const priorText = priorResultText(deps.db, prior.result_ref);
       let stepId: string | null = null;
       try {
         const step = beginStep(deps.db, {
@@ -613,7 +660,11 @@ export async function runHandShell<C>(deps: HandDeps, req: HandRequest, spec: Ha
       return {
         ok: true,
         code: "ok",
-        text: `${note}。结果同上一次，不用再查。`,
+        text:
+          `${note}。` +
+          (priorText === ""
+            ? "结果同上一次，不用再查。"
+            : `上次的结果（不用再查）：\n${priorText}`),
         taskId: task.id,
         stepId,
         approvalId: null,
@@ -787,7 +838,9 @@ export async function runHandShell<C>(deps: HandDeps, req: HandRequest, spec: Ha
     const stop = (await spec.afterAct?.(deps, task, action, req, ctx, actResult)) ?? null;
 
     // ── 7b) 记结果 ─────────────────────────────────────────────────────────
-    const resultShape =
+    // `summary` 是给模型看的正文，也一起存进 artifact：崩溃恢复跳过重做时要把它带回去，
+    // 而手各自的 resultArtifact 只挑结构化字段（files 的正文就不在里面）。
+    const shaped =
       spec.resultArtifact?.(action, req, ctx, {
         data: actResult.data,
         snapshotRef,
@@ -800,6 +853,10 @@ export async function runHandShell<C>(deps: HandDeps, req: HandRequest, spec: Ha
         snapshot: snapshotRef !== null ? "created" : verdict.handling === "snapshot" ? "unavailable" : "not_required",
         approval_id: approvalId,
       };
+    const resultShape =
+      shaped !== null && typeof shaped === "object" && !Array.isArray(shaped)
+        ? { ...(shaped as Record<string, unknown>), summary: actResult.summary }
+        : shaped;
     const resultArtifact = putArtifact(deps.db, JSON.stringify(resultShape));
     try {
       endStep(deps.db, stepId, { status: "succeeded", result_ref: resultArtifact.hash });
@@ -899,7 +956,11 @@ const practiceSpec: HandSpec<PracticeContext> = {
       try {
         content = readFileSync(target.abs, "utf8");
       } catch {
-        throw new PracticeError("not_found", `文件不存在：${target.rel}`);
+        throw new PracticeError(
+          "not_found",
+          `练习文件夹里没有：${target.rel}。读项目文件请用 files 手的 read（工作区相对路径）；` +
+            "practice 只管练习文件夹，两边不是一回事。",
+        );
       }
       const MAX_READ = 8000;
       const truncated = content.length > MAX_READ;

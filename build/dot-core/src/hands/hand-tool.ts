@@ -106,6 +106,10 @@ export const FILES_TOOL_PARAMETERS: Record<string, unknown> = {
     path: { type: "string", description: "相对工作区根的路径；list 省略表示根目录，read/mkdir/write 必填" },
     content: { type: "string", description: "write 的内容（utf8 文本）" },
     overwrite: { type: "boolean", description: "write 时是否允许覆盖已有文件，默认 false" },
+    offset: {
+      type: "number",
+      description: "read 时从第几个字符开始读（默认 0）。文件太长被截断时，回复里会告诉你下次填多少",
+    },
   },
 };
 

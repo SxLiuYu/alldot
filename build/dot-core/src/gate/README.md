@@ -2,7 +2,7 @@
 
 本目录只实现判定与审批状态机，不碰 `~/.dsh/`、`~/.allbot/allbot.json`、`C:/allbot-public/`，也不起服务。装的时候按下面接线：
 
-1. 白名单：从 `~/.allbot/dot/config.json` 读 `exec.whitelist`（若方案施工时加该项），传给 `execArgVerdict(program, args, { whitelist })`；没配就用 `DEFAULT_EXEC_WHITELIST`。名单外程序一律 4 档问。judgeTier 内部默认同一份名单。
+1. 白名单：从 `~/.allbot/dot/config.json` 读 `exec.whitelist`（若方案施工时加该项），传给 `execArgVerdict(program, args, { whitelist })`；没配就用 `DEFAULT_EXEC_WHITELIST`。名单外程序一律 4 档问。judgeTier 内部默认同一份名单。2026-11-26 补入了 `head/tail/pwd/echo/grep` 五个只读查看程序（它们本就在 exec.ts 的 `READONLY_PROGRAMS`，进白名单后判 1 档）；**刻意没加 `find`**，因为它自带 `-delete/-exec` 会写文件。shell（cmd/powershell/bash/sh）仍一律不在名单里：命令是否只读静态判不出来，而 shell 拍不了快照，开这个口子等于撤掉回滚兜底。
 2. 受保护程序：把 `config.desktop.human_only_apps` 传给 `judgeTier({ ..., protectedApps })` 和 `isProtectedApp(name, extra)`。内置部分已有 `Weixin/WeChat`；ds-bot 现成名单施工时读出来并进 `extra`，不要写死在本目录。受保护程序既看桌面窗口字段，也看 exec 的 program/program 路径，命中即 6 档直接拒。
 3. DENY 工具：从 B.1 的口闸名单反推出的拒绝项经 `input.denyTools` 传入；工具名不在允许名单时由口闸先拒，gate 再兜一层。
 4. 审批：`createApproval/db` 与 `decideApproval/db` 吃账本连接（由 dot-core 入口 `openLedger` 得到），本目录直接 `import ../ledger/index.ts`，不复制账本代码。`decideApproval` 返回 false 表示这次调用没抢到 `WHERE status='pending'`，调用方按幂等重复处理，不要报错。

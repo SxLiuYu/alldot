@@ -289,19 +289,23 @@ export async function proposeImprovementsWithReason(opts: ProposeOptions): Promi
   if (capped > 0) {
     appendEvent(db, {
       type: EVENT_PROPOSAL_CAPPED,
+      ts: at.toISOString(),
       payload: { requested: normalized.length, accepted: accepted.length, max, dropped },
     });
   }
 
-  for (const proposal of accepted) persistProposal(db, proposal);
+  for (const proposal of accepted) persistProposal(db, proposal, at);
   return { proposals: accepted, reason: null, skipped: false };
 }
 
 /** 一条提案落账：正文进 artifacts，索引与摘要进 events，请示卡 kind=question。 */
-function persistProposal(db: LedgerDb, proposal: Proposal): void {
+function persistProposal(db: LedgerDb, proposal: Proposal, at: Date): void {
   const artifact = putArtifact(db, JSON.stringify(proposal, null, 2));
   appendEvent(db, {
     type: EVENT_PROPOSAL,
+    // 2026-11-26：ts 必须用调用方传进来的 now，否则 proposalsToday(db, at) 按 UTC 日
+    // 数事件时数到的是真实日期，跨 UTC 日边界会算错每日上限（测试用固定日期暴露了它）。
+    ts: at.toISOString(),
     payload: {
       proposal_id: proposal.id,
       kind: proposal.kind,

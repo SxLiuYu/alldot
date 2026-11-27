@@ -74,10 +74,10 @@ test("patched 快照 node --check 过", () => {
   assert.equal(r.status, 0, r.stderr);
 });
 
-test("③ 102 名单断言：6 放行 96 拒 + 4 桥工具放行", () => {
+test("③ 102 名单断言：6 放行 96 拒 + 5 桥工具放行", () => {
   const r = runToollistAssertion(PATCHED);
-  assert.equal(r.total, 106);
-  assert.equal(r.allow, 10);
+  assert.equal(r.total, 107);
+  assert.equal(r.allow, 11);
   assert.equal(r.deny, 96);
   assert.deepEqual(r.unexpectedAllow, []);
   assert.deepEqual(r.unexpectedDeny, []);
@@ -87,9 +87,10 @@ test("③ 102 名单断言：6 放行 96 拒 + 4 桥工具放行", () => {
   for (const name of ["create_bot", "web_search", "todo_write", "subagent", "write", "task_start"]) {
     assert.equal(byName[name], "deny", name);
   }
+  assert.ok(PATCHED.includes("mcp__brain__brain_reply"), "补丁必须放行 brain_reply");
   assert.equal(TOOLS_102.length, 102);
   assert.equal(MOUTH_ALLOW.length, 6);
-  assert.equal(BRAIN_ALLOW.length, 4);
+  assert.equal(BRAIN_ALLOW.length, 5);
 });
 
 test("③ 对 pristine 文件跑断言会失败（没有函数块）", () => {

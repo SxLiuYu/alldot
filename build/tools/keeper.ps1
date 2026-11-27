@@ -271,13 +271,14 @@ function Get-BackupRetentionPlan {
 }
 
 function New-Row {
-    param([string]$Id, [string]$Title, [string]$State, [string]$Detail, [string]$Action = '')
+    param([string]$Id, [string]$Title, [string]$State, [string]$Detail, [string]$Action = '', [bool]$Blocks = $false)
     return [ordered]@{
         id     = $Id
         title  = $Title
         state  = $State
         detail = [string]$Detail
         action = [string]$Action
+        blocks = [bool]$Blocks
     }
 }
 
@@ -733,12 +734,12 @@ function Get-KeeperVerdict {
     } else {
         $detail = 'GET /api/status 失败：' + [string](Get-Prop -Obj $gw -Name 'error' '未知')
         if (-not $gwCmdExists) {
-            [void]$rows.Add((New-Row 'gateway' '18789 网关' 'red' ($detail + '；找不到 gateway.cmd：' + $gwStartCmd) '装 allbot 网关或修 keepalive.gateway_cmd'))
+            [void]$rows.Add((New-Row 'gateway' '18789 网关' 'red' ($detail + '；找不到 gateway.cmd：' + $gwStartCmd) '装 allbot 网关或修 keepalive.gateway_cmd' $true))
         } elseif ($startSuppressed -ne '') {
-            [void]$rows.Add((New-Row 'gateway' '18789 网关' 'red' ($detail + '；' + $startSuppressed) '人工看一眼网关日志'))
+            [void]$rows.Add((New-Row 'gateway' '18789 网关' 'red' ($detail + '；' + $startSuppressed) '人工看一眼网关日志' $true))
             [void]$actions.Add((New-Action 'start_gateway' 'process_start' $gwStartCmd '网关没起' $false $startSuppressed))
         } else {
-            [void]$rows.Add((New-Row 'gateway' '18789 网关' 'red' $detail '起 gateway.cmd'))
+            [void]$rows.Add((New-Row 'gateway' '18789 网关' 'red' $detail '起 gateway.cmd' $true))
             [void]$actions.Add((New-Action 'start_gateway' 'process_start' $gwStartCmd '网关没起，按退避拉起'))
         }
     }
@@ -768,7 +769,7 @@ function Get-KeeperVerdict {
     if ($bridgeOk) {
         [void]$rows.Add((New-Row 'bridge' '8799 dot-bridge' 'green' 'GET /health 通' ''))
     } elseif ($bridgeCmdExists) {
-        [void]$rows.Add((New-Row 'bridge' '8799 dot-bridge' 'red' ('GET /health 失败：' + [string](Get-Prop -Obj $bridge -Name 'error' '未知')) '起 dot-bridge（node build/dot-bridge/index.mjs）'))
+        [void]$rows.Add((New-Row 'bridge' '8799 dot-bridge' 'red' ('GET /health 失败：' + [string](Get-Prop -Obj $bridge -Name 'error' '未知')) '起 dot-bridge（node build/dot-bridge/index.mjs）' $true))
         Add-StackAction $actions 'dot-bridge 没起'
     } else {
         [void]$rows.Add((New-Row 'bridge' '8799 dot-bridge' 'yellow' ('没装：找不到 ' + $bridgeCmd) '先做 dot-bridge（B.6）'))
@@ -1201,6 +1202,21 @@ function Invoke-Keeper {
     $verdict = Get-KeeperVerdict -Plan $plan -PriorState $prior -NowUtc $nowUtc
     $executed = Invoke-KeeperActions -Actions $verdict.actions -Plan $plan -DoIt $doIt
 
+    # 公网入口隧道：每轮顺带守护一次（幂等，隧道活着时秒退）。
+    # 手机经 https://relay.sxliuyu.bond/dot/ 访问本机桥，靠的就是这条 SSH 反向隧道；
+    # 只读/ dry-run 不跑，避免每次巡检都去 SSH。
+    if ($doIt) {
+        $tunnelScript = Join-Path $DotRoot 'build\tools\tunnel-keepalive.ps1'
+        if (Test-Path $tunnelScript) {
+            try {
+                $tp = Start-Process -FilePath 'powershell.exe' `
+                    -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $tunnelScript) `
+                    -WindowStyle Hidden -PassThru
+                $null = $tp.WaitForExit(60000)
+            } catch { }
+        }
+    }
+
     # 真起了网关 / 真停了网关，就记进退避历史（下一轮的上限与「别立刻起回来」靠它）
     $gatewayStarts = @($verdict.gatewayStarts)
     $gatewayStops = @($verdict.gatewayStops)
@@ -1249,22 +1265,25 @@ function Invoke-Keeper {
         }
     }
 
+    $ledgerBlocks = $false
     if ($NoLedger) {
         $ledgerRowState = 'yellow'
         $ledgerRowDetail = '本轮跳过账本检查（-NoLedger）'
     } elseif (-not $ledgerInfo.read) {
         $ledgerRowState = 'yellow'
         $ledgerRowDetail = ('账本读不了：' + $ledgerInfo.error)
+        $ledgerBlocks = $true
     } elseif ($ledgerInfo.chainOk -eq $false) {
         $ledgerRowState = 'red'
         $ledgerRowDetail = 'events 哈希链断了（账本被改过或写坏）'
+        $ledgerBlocks = $true
     } else {
         $ledgerRowState = 'green'
         $recovText = '还没有'
         if ($null -ne $ledgerInfo.recoveryReport) { $recovText = '有' }
         $ledgerRowDetail = ('events ' + [string]$ledgerInfo.eventCount + ' 条，哈希链对得上；恢复报告：' + $recovText)
     }
-    [void]$verdict.rows.Add((New-Row 'ledger' '账本通道' $ledgerRowState $ledgerRowDetail ''))
+    [void]$verdict.rows.Add((New-Row 'ledger' '账本通道' $ledgerRowState $ledgerRowDetail '' $ledgerBlocks))
 
     $overall = 'green'
     foreach ($r in $verdict.rows) {
@@ -1410,6 +1429,22 @@ function Invoke-Keeper {
             if (-not (Test-Path $StateDir)) { New-Item -ItemType Directory -Path $StateDir -Force | Out-Null }
             $queueLine = ($report | ConvertTo-Json -Depth 10 -Compress)
             [System.IO.File]::AppendAllText($QueuePath, ($queueLine + "`n"), $utf8NoBom)
+        } catch { }
+        # 队列自动落链（2026-11-27）：设计上由 dot-core maintenance 调 keeper-ledger.mjs drain，
+        # 实测没人调，队列涨到 1.7 MB。超过 2 MB 就在这里自己调一次——该工具只在全部落链
+        # 成功之后才清队列，中途失败会保留原文，所以失败也不用回滚。keeper 平时仍然不写账本。
+        try {
+            if ($QueuePath -and (Test-Path -LiteralPath $QueuePath)) {
+                $qBytes = (Get-Item -LiteralPath $QueuePath).Length
+                if ($qBytes -gt 2097152) {
+                    $drainHelper = Join-Path $PSScriptRoot 'keeper-ledger.mjs'
+                    if (Test-Path -LiteralPath $drainHelper) {
+                        $drainOut = (& node $drainHelper 'drain' '--db' $LedgerDbPath '--queue' $QueuePath 2>&1 | Out-String)
+                        $drainLog = Join-Path $StateDir 'keeper-drain.log'
+                        [System.IO.File]::AppendAllText($drainLog, ((Format-Iso $nowUtc) + ' 队列 ' + $qBytes + ' 字节 → ' + $drainOut.Trim() + "`n"), $utf8NoBom)
+                    }
+                }
+            }
         } catch { }
     }
 

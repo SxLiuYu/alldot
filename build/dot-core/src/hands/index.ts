@@ -125,6 +125,15 @@ export {
   type FilesAction,
 } from "./files.ts";
 
+// 2026-11-27：命令手。工人的工具表里原来没有它，"跑测试"只能去点桌面开终端。
+export {
+  EXEC_TOOL_NAME,
+  EXEC_TOOL_DESCRIPTION,
+  EXEC_TOOL_PARAMETERS,
+  runExecHand,
+  splitCommand,
+} from "./exec.ts";
+
 export {
   createDesktopHand,
   normalizeDesktopAction,
@@ -191,6 +200,7 @@ import { PRACTICE_TOOL_NAME } from "./hand.ts";
 const IDENTITY_TRACKED_TOOLS = new Set<string>([
   PRACTICE_TOOL_NAME,
   "files",
+  "exec",
   "desktop",
   "logged_browser",
   "clean_browser",

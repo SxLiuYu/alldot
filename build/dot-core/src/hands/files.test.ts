@@ -330,3 +330,64 @@ test("正常一轮（run_epoch=0）：同样的调用照旧执行，不拦", asy
     f.cleanup();
   }
 });
+
+test("工作区文件手：长文件按 offset 接着读（别再逼工人用 tail 啃）", async () => {
+  const f = fixture();
+  try {
+    const taskId = taskWithWorkspace(f, f.workspace);
+    const body = "A".repeat(5000) + "中间标记" + "B".repeat(5000);
+    writeFileSync(join(f.workspace, "长文件.txt"), body, "utf8");
+
+    const first = await runFilesHand(
+      { db: f.db.db, config: f.config, snapshotsRoot: f.snapshotsRoot },
+      { taskId, action: "read", path: "长文件.txt" },
+    );
+    assert.equal(first.ok, true, first.text);
+    assert.match(first.text, /共 10004 字符/, "要说清全文多长");
+    assert.match(first.text, /接着读用 offset=3400/, "截断时要告诉下次从哪读");
+    assert.doesNotMatch(first.text, /中间标记/, "第一屏读不到中间那段");
+
+    const second = await runFilesHand(
+      { db: f.db.db, config: f.config, snapshotsRoot: f.snapshotsRoot },
+      { taskId, action: "read", path: "长文件.txt", params: { offset: 3400 } },
+    );
+    assert.equal(second.ok, true, second.text);
+    assert.match(second.text, /中间标记/, "第二屏要读到中间那段");
+
+    const third = await runFilesHand(
+      { db: f.db.db, config: f.config, snapshotsRoot: f.snapshotsRoot },
+      { taskId, action: "read", path: "长文件.txt", params: { offset: 6800 } },
+    );
+    assert.equal(third.ok, true, third.text);
+    assert.match(third.text, /已到文件末尾/, "读到尾要说清已经到底了");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("崩溃恢复跳过重做时，把上次读到的正文带回去（否则模型只会换个写法再问一遍）", async () => {
+  const f = fixture();
+  try {
+    const taskId = taskWithWorkspace(f, f.workspace);
+    writeFileSync(join(f.workspace, "内容.txt"), "第一行内容\n第二行内容", "utf8");
+
+    const first = await runFilesHand(
+      { db: f.db.db, config: f.config, snapshotsRoot: f.snapshotsRoot },
+      { taskId, action: "read", path: "内容.txt" },
+    );
+    assert.equal(first.ok, true, first.text);
+    assert.match(first.text, /第一行内容/);
+
+    // 崩溃后重新排队：epoch 变 1，同一个动作会被拦成「没有重做」
+    f.db.db.prepare("UPDATE tasks SET run_epoch = 1 WHERE id = ?").run(taskId);
+    const again = await runFilesHand(
+      { db: f.db.db, config: f.config, snapshotsRoot: f.snapshotsRoot },
+      { taskId, action: "read", path: "内容.txt" },
+    );
+    assert.equal(again.ok, true);
+    assert.match(again.text, /没有重做/);
+    assert.match(again.text, /第一行内容/, "上次的正文要带回来，不能只说「结果同上一次」");
+  } finally {
+    f.cleanup();
+  }
+});

@@ -24,6 +24,26 @@ import {
 // 1. 三档同一动作不同参数落在不同档
 // ────────────────────────────────────────────────────────────────────────────
 
+test("只读查看类程序进白名单后判 1 档；带执行性语法仍 4 档", () => {
+  for (const cmd of ["head -n 5 a.txt", "tail -n 3 a.txt", "pwd", "echo hello", "grep -n foo a.txt"]) {
+    const v = judgeTier({ tool: "exec", action: "exec", args: { command: cmd } });
+    assert.equal(v.tier, 1, `${cmd} → ${v.tier}/${v.rule}`);
+    assert.equal(v.rule, "exec_readonly");
+    assert.equal(v.handling, "allow");
+  }
+  // find 没进白名单：它自带 -delete/-exec，仍要问。
+  const find = judgeTier({ tool: "exec", action: "exec", args: { command: "find . -name a.txt" } });
+  assert.equal(find.tier, 4);
+  assert.equal(find.rule, "ask_non_whitelist");
+  // 白名单程序名配上重定向仍 4 档（白名单不等于安全）。
+  const redirect = judgeTier({
+    tool: "exec",
+    action: "exec",
+    args: { command: "cat a.txt > b.txt" },
+  });
+  assert.equal(redirect.tier, 4);
+});
+
 test("同一动作 exec：git status=1、node build.js=2、python -c=4", () => {
   const read = judgeTier({ tool: "exec", action: "exec", args: { command: "git status" } });
   const write = judgeTier({

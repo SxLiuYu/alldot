@@ -133,6 +133,33 @@ test("say.enabled 默认关，能被 plugins.entries.dot-core.config 覆盖，�
   );
 });
 
+test("notify 推送通道能被解析：空串合法、poll_sec 有范围、写错键名报错", () => {
+  // 空串 = 这条通道没配。之前这里用了不存在的 strAt，整份配置读失败、
+  // 所有段悄悄回落缺省（手机接入、语音一起没生效），所以专门钉一条。
+  const cfg = parseConfig({
+    notify: {
+      enabled: true,
+      feishu_webhook: "",
+      wechat_python: "D:/python.exe",
+      wechat_script: " C:/helper.py ",
+      wechat_marker: "alldot",
+      poll_sec: 15,
+    },
+  });
+  assert.equal(cfg.notify.enabled, true);
+  assert.equal(cfg.notify.feishu_webhook, "");
+  assert.equal(cfg.notify.wechat_script, "C:/helper.py", "两头空白要 trim 掉");
+  assert.equal(cfg.notify.poll_sec, 15);
+  assert.equal(defaultConfig().notify.enabled, false);
+
+  assert.throws(() => parseConfig({ notify: { poll_sec: 1 } }), ConfigError);
+  assert.throws(() => parseConfig({ notify: { wechat_python: 42 } }), ConfigError);
+  assert.throws(
+    () => parseConfig({ notify: { webhook: "x" } }),
+    (err: unknown) => err instanceof ConfigError && /未知字段/.test((err as Error).message),
+  );
+});
+
 test("JSON 语法错误包成 ConfigError 且带上文件名", () => {
   withTempDir((dir) => {
     const path = join(dir, "config.json");

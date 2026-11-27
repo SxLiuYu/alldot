@@ -1,9 +1,9 @@
 /**
  * src/skills/index.ts —— 技能库：把 openai/skills + openai/plugins 里的 SKILL.md 变成工人能用的一条工具。
  *
- * 为什么要有它：那两份目录（584 条，5 MB）是「怎么做某件事」的做法说明，不是代码。
- * 工人现在没有 shell 手（故意的：一条命令改哪些文件执行前不可知，拍不了快照），所以技能里
- * 带脚本的部分**跑不了**；能给的是判断、步骤、坑——这仍然比模型自己瞎猜强。
+ * 为什么要有它：从 openai/skills + openai/plugins 里筛出的通用做法说明（白名单少量条目）
+ * 加上项目自己的技能，都是「怎么做某件事」的文字，不是代码。机器没开 shell 手，
+ * 技能里带脚本的部分**跑不了**；能给的是判断、步骤、坑——这仍然比模型自己瞎猜强。
  *
  * 两条动作：
  *   search  按意图找技能（只看 name/description 的倒排打分，不读正文）
@@ -39,7 +39,7 @@ export interface SkillIndex {
 export const SKILLBOOK_TOOL_DEFINITION = {
   name: SKILLBOOK_TOOL_NAME,
   description:
-    "技能库（584 条做事说明：从 openai/skills 和 openai/plugins 收来的，说明文字都是英文）。" +
+    "技能库（少量通用做法说明 + 项目自己的技能，说明多为英文）。" +
     "action=search 按意图找（给你 id + 一句说明）；action=read 按 id 读正文（步骤、坑、检查清单）。" +
     "**查询用英文关键词命中率最高**（做表格→spreadsheet，日历→calendar，设计稿→figma，报表→report）。" +
     "技能里的命令这台机器跑不了（没有 shell 手），借它的做法和判断用。只读，不改任何东西。",

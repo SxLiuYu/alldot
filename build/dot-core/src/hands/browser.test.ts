@@ -105,6 +105,26 @@ test("navigate：第 3 档放行、记账；MCP 工具名与参数正确", async
   }
 });
 
+test("navigate 只开 http(s)：file:// 与盘符路径当场拒，不碰 MCP、不记账", async () => {
+  const f = makeFixture();
+  try {
+    const taskId = createTask(f.deps.db, { intent: "读一个本地文件" });
+    const { transport, calls } = makeBrowserTransport(() => textResult("不该被调用"));
+    const hand = createBrowserHand(f.deps, "logged_browser", { transport });
+
+    for (const url of ["file:///C:/tmp/a.md", "C:\\tmp\\a.md", "D:/项目/x.ts"]) {
+      const out = await hand.run({ action: "navigate", params: { url }, taskId });
+      assert.equal(out.ok, false, url);
+      assert.equal(out.code, "bad_action");
+      assert.match(out.text, /files 手的 read/);
+    }
+    assert.deepEqual(calls, [], "非 http(s) 地址不许进 MCP");
+    assert.equal(listSteps(f.deps.db, taskId).length, 0, "拒了不记账：不能算成写类失败把任务判死");
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("提交类 click：reversible=false → 第 4 档出单，不碰 MCP", async () => {
   const f = makeFixture();
   try {

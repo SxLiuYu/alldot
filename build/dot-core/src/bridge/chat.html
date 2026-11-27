@@ -2,7 +2,16 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f0f0f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="alldot">
+<meta name="description" content="alldot 个人 AI 助手，远程派任务给电脑执行">
+<link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png" type="image/png">
+<meta name="mobile-web-app-capable" content="yes">
 <title>alldot — 个人 AI 助手</title>
 <style>
 :root {
@@ -145,6 +154,9 @@ body {
   background: var(--surface2);
   color: var(--text2);
 }
+.chat-header .badge.badge-ready { background: #4caf5022; color: var(--success); }
+.chat-header .badge.badge-starting { background: #ff980022; color: var(--warning); }
+.chat-header .badge.badge-error { background: #f4433622; color: var(--error); }
 
 .messages {
   flex: 1;
@@ -357,13 +369,97 @@ body {
 .send-btn:hover { background: var(--accent2); }
 .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* 语音按钮（手机上是主要输入方式） */
+.mic-btn {
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  border-radius: var(--radius);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+.mic-btn:hover { background: var(--border); }
+.mic-btn.recording {
+  background: var(--error);
+  border-color: var(--error);
+  color: white;
+  animation: pulse 1.2s infinite;
+}
+.mic-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* 手机端：侧栏收起，输入框贴底，按钮加大 */
+@media (max-width: 720px) {
+  body { flex-direction: column; }
+  .sidebar {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    flex: 0 0 auto;
+    max-height: 116px;
+  }
+  .sidebar-header { padding: 10px 14px; }
+  .sidebar-header h1 { font-size: 16px; }
+  .sidebar-header p, .new-task-btn { display: none; }
+  .task-list { display: flex; gap: 6px; overflow-x: auto; padding: 6px 10px; }
+  .task-item { flex: 0 0 auto; min-width: 120px; max-width: 180px; margin-bottom: 0; padding: 6px 10px; }
+  .chat-header { padding: 10px 14px; }
+  .messages { padding: 14px; gap: 12px; }
+  .message { max-width: 92%; }
+  .avatar { width: 30px; height: 30px; font-size: 14px; }
+  .bubble { padding: 10px 12px; font-size: 14px; }
+  .input-area { padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)); }
+  .input-box textarea { min-height: 44px; font-size: 16px; } /* 16px 防 iOS 自动放大 */
+  .send-btn, .mic-btn { width: 44px; height: 44px; font-size: 18px; }
+  .approval-card .actions { flex-direction: column; }
+  .approval-card .btn-approve, .approval-card .btn-reject { width: 100%; }
+}
+
 .input-hint {
   font-size: 11px;
   color: var(--text2);
   margin-top: 6px;
 }
 
-/* ── Approval card ── */
+/* 朗读小按钮 */
+.speak-btn {
+  margin-left: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text2);
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.speak-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+/* 失败气泡：只有文字和可选动作，不挂朗读 */
+.message.error .avatar { background: #f4433622; }
+.message.error .bubble {
+  background: #f4433611;
+  border: 1px solid #f4433666;
+  color: #ffd7d2;
+}
+.action-row .bubble { background: transparent; border: none; padding: 0; }
+.action-btn {
+  padding: 8px 16px;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.action-btn:hover { background: var(--accent); color: white; }
+
+/* 审批卡 */
 .approval-card {
   background: var(--surface);
   border: 2px solid var(--warning);
@@ -414,6 +510,169 @@ body {
   font-size: 13px;
 }
 
+/* ── P1：三态徽章与体检面板 ── */
+.chat-header .badge { cursor: pointer; border: 1px solid transparent; }
+.chat-header .badge.badge-doctor-ok { background: #4caf5022; color: var(--success); border-color: #4caf5044; }
+.chat-header .badge.badge-doctor-warn { background: #ff980022; color: var(--warning); border-color: #ff980044; }
+.chat-header .badge.badge-doctor-bad { background: #f4433622; color: var(--error); border-color: #f4433644; animation: pulse 2s infinite; }
+
+.doctor-panel {
+  position: fixed;
+  top: 52px;
+  right: 12px;
+  width: min(430px, calc(100vw - 24px));
+  max-height: min(72vh, 660px);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.55);
+  padding: 12px 14px 16px;
+  z-index: 40;
+}
+.doctor-panel[hidden] { display: none; }
+
+.panel-head { display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+.panel-close, .detail-close {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text2);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.panel-close:hover, .detail-close:hover { color: var(--text); }
+.panel-summary { font-size: 12px; padding: 6px 10px; border-radius: 8px; margin-bottom: 10px; }
+.panel-summary.panel-ok { background: #4caf5022; color: var(--success); }
+.panel-summary.panel-warn { background: #ff980022; color: var(--warning); }
+.panel-summary.panel-bad { background: #f4433622; color: var(--error); }
+.panel-empty, .panel-fix-error { font-size: 12px; color: var(--text2); padding: 8px 0; }
+.panel-fix-error { color: var(--error); }
+.panel-config-error {
+  border: 1px solid #f4433666;
+  background: #f4433611;
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.panel-config-error .cfg-title { color: var(--error); font-weight: 600; margin-bottom: 4px; }
+.panel-config-error .cfg-path { color: var(--text); margin-bottom: 4px; }
+.panel-config-error .cfg-path code { background: var(--bg); padding: 1px 5px; border-radius: 4px; font-family: var(--mono); }
+.panel-config-error .cfg-msg { color: var(--text2); }
+
+.doctor-items { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.doctor-item { border: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.doctor-item.doctor-green { border-left-color: var(--success); }
+.doctor-item.doctor-yellow { border-left-color: var(--warning); }
+.doctor-item.doctor-red { border-left-color: var(--error); }
+.doctor-item.doctor-blocking { background: #f4433608; }
+.doctor-row { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.doctor-title { font-weight: 500; }
+.doctor-state { font-size: 11px; color: var(--text2); flex-shrink: 0; }
+.doctor-item.doctor-green .doctor-state { color: var(--success); }
+.doctor-item.doctor-yellow .doctor-state { color: var(--warning); }
+.doctor-item.doctor-red .doctor-state { color: var(--error); }
+.doctor-detail { font-size: 12px; color: var(--text2); margin-top: 3px; }
+.doctor-tag {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--error);
+  border: 1px solid #f4433666;
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-top: 5px;
+}
+.doctor-fix-row { display: flex; align-items: center; gap: 8px; margin-top: 7px; flex-wrap: wrap; }
+.doctor-fix {
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.doctor-fix:hover { background: var(--accent); color: white; }
+.doctor-fix:disabled { opacity: 0.5; cursor: not-allowed; }
+.doctor-fix-error { font-size: 11px; color: var(--error); }
+
+/* ── 待批卡（/api/approvals） ── */
+.approval-stack { display: none; }
+.approval-stack.has-items {
+  display: block;
+  padding: 12px 20px 0;
+  max-height: 42vh;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border);
+}
+.approval-stack .approval-card { margin: 0 0 10px; }
+.approval-card h4 { font-size: 13px; }
+.approval-summary { font-size: 13px; line-height: 1.5; margin-bottom: 8px; }
+.approval-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text2);
+  margin-bottom: 10px;
+  font-family: var(--mono);
+}
+.approval-card.approval-dead { border-color: var(--border); opacity: 0.72; }
+.approval-card.approval-dead h4 { color: var(--text2); }
+.approval-card.approval-dead .btn-approve,
+.approval-card.approval-dead .btn-reject,
+.approval-card.approval-done .btn-approve,
+.approval-card.approval-done .btn-reject { background: var(--surface2); color: var(--text2); cursor: not-allowed; }
+.approval-dead-note { font-size: 12px; color: var(--text2); margin-top: 8px; }
+.approval-error { font-size: 12px; color: var(--error); margin-top: 8px; }
+
+/* ── 回答下的反馈按钮 ── */
+.message .body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.feedback-row { display: flex; align-items: center; gap: 6px; padding-left: 4px; flex-wrap: wrap; }
+.feedback-btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text2);
+  border-radius: 6px;
+  padding: 2px 9px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.feedback-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.feedback-btn.picked { opacity: 0.6; border-color: var(--accent); color: var(--accent); }
+.feedback-btn:disabled { cursor: default; }
+.feedback-done { font-size: 11px; color: var(--text2); }
+
+/* ── 任务详情侧板 ── */
+.detail-pane {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(360px, 92vw);
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -8px 0 30px rgba(0, 0, 0, 0.5);
+  padding: 14px 16px;
+  overflow-y: auto;
+  z-index: 45;
+}
+.detail-pane[hidden] { display: none; }
+.detail-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; font-size: 14px; }
+.detail-intent { font-size: 14px; line-height: 1.5; margin-bottom: 10px; }
+.detail-state { font-size: 13px; padding: 8px 10px; border-radius: 8px; background: var(--surface2); margin-bottom: 10px; }
+.detail-state-running { color: var(--accent); }
+.detail-state-done { color: var(--success); }
+.detail-state-failed { color: var(--error); }
+.detail-state-waiting { color: var(--warning); }
+.detail-lines { list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text2); }
+.detail-lines span { color: var(--text); }
+.detail-live { font-size: 11px; color: var(--accent); margin-top: 10px; }
+.detail-foot { font-size: 11px; color: var(--text2); font-family: var(--mono); margin-top: 12px; }
+.detail-empty { font-size: 12px; color: var(--text2); margin-top: 8px; }
+.detail-error { font-size: 12px; color: var(--error); margin-top: 8px; }
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -435,200 +694,1572 @@ body {
 <div class="main">
   <div class="chat-header">
     <h2 id="chatTitle">新对话</h2>
-    <div class="badge" id="statusBadge">就绪</div>
+    <div class="badge" id="statusBadge" title="点开看体检面板">就绪</div>
   </div>
+  <div class="approval-stack" id="approvalStack"></div>
+  <div class="doctor-panel" id="doctorPanel" hidden></div>
   <div class="messages" id="messages"></div>
   <div class="input-area">
     <div class="input-box">
-      <textarea id="input" placeholder="描述你的任务… 例如：把下载文件夹的 PDF 按月份归档" rows="1" onkeydown="handleKey(event)"></textarea>
+      <textarea id="input" placeholder="问一句，或让它动手… 例如：帮我看看下载文件夹有多少个 PDF" rows="1" onkeydown="handleKey(event)"></textarea>
+      <button class="mic-btn" id="micBtn" onclick="toggleVoice()" title="按住说话" disabled>🎤</button>
       <button class="send-btn" id="sendBtn" onclick="send()">↑</button>
     </div>
-    <div class="input-hint">Enter 发送 · Shift+Enter 换行 · 支持自然语言描述任务</div>
+    <div class="input-hint" id="inputHint">Enter 发送 · Shift+Enter 换行 · 默认只回答，想让它动手点「让它去做」</div>
   </div>
 </div>
 
+<div class="detail-pane" id="detailPane" hidden></div>
+
 <script>
-const API_BASE = '';
+/* dot:chat-state (begin) */
+// 页面纯逻辑：只做字符串与判定的计算，不碰 document / window / fetch / localStorage。
+// 测试按这两个标记切块，用 new Function 单独求值（不引外链，CSP 只放内联）。
+function dotChatState() {
+  function escHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function formatText(text) {
+    return escHtml(text)
+      .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/\n/g, '<br>');
+  }
+
+  // 失败气泡不挂朗读；普通助手回复才给 🔊。
+  function bubbleHtml(role, text, opts) {
+    const options = opts || {};
+    const speak = role === 'assistant' && options.speak !== false
+      ? '<button class="speak-btn" title="朗读" onclick="speakBubble(this)">🔊</button>'
+      : '';
+    return formatText(text) + speak;
+  }
+
+  const PROGRESS_TITLE = { active: '正在处理…', paused: '等你决定', done: '完成', failed: '失败' };
+  const PROGRESS_CLASS = { active: 'active', paused: 'active', done: 'done', failed: 'failed' };
+  const PROGRESS_ICON = { active: '▸', paused: '▸', done: '✓', failed: '✗' };
+
+  function progressHtml(state, text) {
+    const s = PROGRESS_TITLE[state] ? state : 'active';
+    const spinner = s === 'active' ? '<div class="spinner"></div>' : '';
+    return '<div class="progress-title">' + spinner + '<span>' + escHtml(PROGRESS_TITLE[s]) + '</span></div>' +
+      '<ul class="progress-steps"><li class="' + PROGRESS_CLASS[s] + '">' +
+      PROGRESS_ICON[s] + ' ' + escHtml(text) + '</li></ul>';
+  }
+
+  // 只认进度卡里的「状态：X（…）」这一行，绝不拿整张卡做关键词嗅探：
+  // intent 里出现「完成」、或「到哪了：0/0 步已结束」都不该把任务判成完成。
+  const CARD_STATE = {
+    '完成': 'done',
+    '终止': 'failed',
+    '等待输入': 'waiting',
+    '阻塞': 'waiting',
+    '待启动': 'running',
+    '执行中': 'running',
+  };
+
+  function parseCard(text) {
+    const src = String(text == null ? '' : text);
+    const head = /【任务\s+(task_[A-Za-z0-9_-]+)】([^\n]*)/.exec(src);
+    const labelM = /^状态：([^\s（(]+)/m.exec(src);
+    const milestoneM = /^状态：[^\s（(]+（([^）]*)）/m.exec(src);
+    const blockedM = /^卡在谁：(.+)$/m.exec(src);
+    const whyM = /^为什么：(.+)$/m.exec(src);
+    const stateLabel = labelM ? labelM[1] : null;
+    return {
+      taskId: head ? head[1] : null,
+      intent: head ? head[2].trim() : null,
+      stateLabel: stateLabel,
+      state: stateLabel && CARD_STATE[stateLabel] ? CARD_STATE[stateLabel] : 'unknown',
+      milestone: milestoneM ? milestoneM[1] : null,
+      blockedBy: blockedM ? blockedM[1].trim() : null,
+      why: whyM ? whyM[1].trim() : null,
+    };
+  }
+
+  // /health 的返回 → 顶部徽章。判定顺序固定：网络 → 来源被拒 → 没配令牌 → 令牌不对 → 就绪 → 启动中。
+  function serviceStateOf(input) {
+    const i = input || {};
+    const body = i.body || {};
+    const brain = body.brain || {};
+    if (i.networkError) {
+      return {
+        level: 'offline',
+        label: '连不上电脑',
+        title: '没连上电脑：这句话没发出去，电脑那边什么都没做。检查手机网络，确认电脑没睡眠。',
+        sendAllowed: true,
+      };
+    }
+    if (i.httpStatus === 403 || body.error === 'access_denied') {
+      return {
+        level: 'denied',
+        label: '这台设备进不来',
+        title: '服务只接受指定网络里的设备，换口令也没用。连回家里的 Wi-Fi 或远程入口再开。',
+        sendAllowed: false,
+      };
+    }
+    if ((body.token && body.token.configured === false) || body.error === 'bridge_token_missing') {
+      return {
+        level: 'locked',
+        label: '电脑没配好钥匙',
+        title: '电脑上少了接入凭证，现在什么都不会执行，不是你操作错了。在电脑上重启 alldot 或重新生成凭证。',
+        sendAllowed: false,
+      };
+    }
+    if (body.error === 'unauthorized' || brain.mode === 'token_rejected') {
+      return {
+        level: 'expired',
+        label: '登录过期了',
+        title: '这台设备记住的口令不对或已换过，需要重新打开你的专属链接。页面自己修不好。',
+        sendAllowed: false,
+      };
+    }
+    if (brain.online === true) {
+      return { level: 'ready', label: '就绪', title: '大脑已连接', sendAllowed: true };
+    }
+    if (brain.mode === 'route_missing') {
+      return {
+        level: 'starting',
+        label: '大脑插件没加载',
+        title: '电脑上 Dot 的桥接插件还没加载好，稍等再试。',
+        sendAllowed: true,
+      };
+    }
+    if (brain.mode === 'offline') {
+      return {
+        level: 'offline',
+        label: '连不上大脑',
+        title: '电脑上的服务在，但大脑没应答。等它起来再试。',
+        sendAllowed: true,
+      };
+    }
+    if (brain.mode === 'unknown' || brain.online === false || brain.online === null) {
+      return {
+        level: 'starting',
+        label: '服务启动中',
+        title: '电脑上的服务还在启动，页面可以先用。',
+        sendAllowed: true,
+      };
+    }
+    return { level: 'starting', label: '服务启动中', title: '正在确认电脑那边的状态。', sendAllowed: true };
+  }
+
+  // 对话通道的错误码：每个码一句人话；不再把服务端报文当回答。
+  function replyErrorText(code, message, timeoutMs) {
+    const detail = message ? String(message) : '';
+    switch (code) {
+      case 'reply_not_wired':
+      case 'unknown_route':
+        return '电脑上的版本还不支持直接回答。想让它动手，就点下面的「让它去做」。';
+      case 'model_unavailable':
+        return '电脑上的模型现在用不了。这次没执行任何动作，等电脑上的模型服务起来再试。';
+      case 'model_empty':
+        return '模型这次没说话（回了空文本）。换个问法或稍后再试。';
+      case 'model_failed':
+        return '模型回了错。' + (detail ? '服务端说：' + detail + '。' : '') + '再试一次一般就好。';
+      case 'model_invalid':
+        return '模型回的内容读不懂。再试一次。';
+      case 'model_timeout':
+        return '模型没在时限内回话' +
+          (typeof timeoutMs === 'number' && timeoutMs > 0 ? '（等了 ' + Math.round(timeoutMs / 1000) + ' 秒）' : '') +
+          '。这次没执行任何动作，稍后重试。';
+      case 'brain_unavailable':
+        return '连不上电脑上的大脑。这次没提交、也没记账，等它起来再试。';
+      default:
+        return null;
+    }
+  }
+
+  // 四层判别：fetch 抛错 → HTTP 状态码 → 响应体 error 码 → result.isError。
+  function failureOf(input) {
+    const i = input || {};
+    const body = i.body || {};
+    const sc = body.structuredContent || {};
+    const code = body.error || sc.error || i.errorCode || null;
+    const message = i.message || body.message || sc.message || '';
+    const timeoutMs = typeof i.timeoutMs === 'number' ? i.timeoutMs : (typeof body.timeout_ms === 'number' ? body.timeout_ms : null);
+
+    if (i.stage === 'http') {
+      if (i.networkError) {
+        return {
+          level: 'error',
+          text: '没连上电脑：这句话没发出去，电脑那边什么都没做。检查手机网络，确认电脑没睡眠，然后再点重试。',
+          action: { kind: 'retry', label: '重试' },
+        };
+      }
+      if (i.status === 403 || code === 'access_denied') {
+        return {
+          level: 'error',
+          text: '这台设备进不来：服务只接受指定网络里的设备，换口令也没用。连回家里的 Wi-Fi 或远程入口重开，重新连接；还不行就把这条信息发给部署的人。',
+          action: { kind: 'reconnect', label: '重新连接' },
+        };
+      }
+      if (i.status === 503 && (code === 'bridge_token_missing' || (body.token && body.token.configured === false))) {
+        return {
+          level: 'error',
+          text: '电脑上还没配好钥匙：少了接入凭证，现在什么都不会执行，不是你操作错了。等电脑上重启 alldot 或重新生成凭证后再试。',
+          action: { kind: 'reconnect', label: '重新连接' },
+        };
+      }
+      if (i.status === 401 || code === 'unauthorized') {
+        return {
+          level: 'error',
+          text: '登录过期了：这台设备记住的口令不对或已换过，需要重新打开你的专属链接。页面自己修不好。',
+          action: { kind: 'reauth', label: '重新登录' },
+        };
+      }
+      if (i.status >= 500) {
+        return {
+          level: 'error',
+          text: '电脑那边出了点问题（HTTP ' + i.status + '）。' + (message ? '服务端说：' + message : '稍后再试。'),
+          action: { kind: 'retry', label: '重试' },
+        };
+      }
+      return {
+        level: 'error',
+        text: message || ('请求没成功（HTTP ' + i.status + '）。'),
+        action: { kind: 'retry', label: '重试' },
+      };
+    }
+
+    if (i.stage === 'tool' || i.stage === 'reply') {
+      // 桥在 token 没配时把 brain_reply 也包成工具失败；按部署问题说，不按「模型」说。
+      if (code === 'bridge_token_missing') {
+        return {
+          level: 'error',
+          text: '电脑上还没配好钥匙：少了接入凭证，现在什么都不会执行，不是你操作错了。等电脑上重启 alldot 或重新生成凭证后再试。',
+          action: { kind: 'reconnect', label: '重新连接' },
+        };
+      }
+      // 大脑没应答时桥复用了 model_unavailable 码；按 message 认出它，别误报成模型没配。
+      if (code === 'model_unavailable' && /连不上大脑/.test(String(message || ''))) {
+        return {
+          level: 'error',
+          text: '连不上电脑上的大脑。这次没提交、也没记账，等它起来再试。',
+          action: { kind: 'reconnect', label: '重新连接' },
+        };
+      }
+      const mapped = replyErrorText(code, message, timeoutMs);
+      if (mapped !== null) {
+        const action = code === 'reply_not_wired' || code === 'unknown_route'
+          ? { kind: 'promote', label: '让它去做' }
+          : code === 'brain_unavailable'
+            ? { kind: 'reconnect', label: '重新连接' }
+            : { kind: 'retry', label: '重试' };
+        return { level: 'error', text: mapped, action: action };
+      }
+      return {
+        level: 'error',
+        text: '这次没成功，任务没有执行。' + (message ? '服务端说：' + message : ''),
+        action: { kind: 'retry', label: '重试' },
+      };
+    }
+
+    if (i.rpcCode === -32602 && /unknown tool/i.test(String(i.rpcMessage || ''))) {
+      return {
+        level: 'error',
+        text: '电脑上的版本还不支持直接回答。想让它动手，就点下面的「让它去做」。',
+        action: { kind: 'promote', label: '让它去做' },
+      };
+    }
+    if (i.rpcCode === -32600 || i.rpcCode === -32601 || i.rpcCode === -32602 || i.rpcCode === -32700) {
+      return {
+        level: 'error',
+        text: '服务没看懂这条请求：版本或格式对不上，重发一般还是同样的结果。点「重新连接」，还不行就刷新页面。',
+        action: { kind: 'reconnect', label: '重新连接' },
+      };
+    }
+    return {
+      level: 'error',
+      text: '服务回了一个错误' + (i.rpcCode === undefined ? '' : '（' + i.rpcCode + '）') + '。' +
+        (i.rpcMessage || message || '稍后再试。'),
+      action: { kind: 'reconnect', label: '重新连接' },
+    };
+  }
+
+  // 发送默认只回答：恒 brain_reply；只有用户点「让它去做」才走 promoteTool → brain_task。
+  function submitTool(intent, context) {
+    const args = { intent: String(intent == null ? '' : intent) };
+    if (context) args.context = String(context);
+    return { name: 'brain_reply', arguments: args };
+  }
+
+  function promoteTool(intent) {
+    return { name: 'brain_task', arguments: { intent: String(intent == null ? '' : intent), declared: {} } };
+  }
+
+  function buildContext(history, maxChars) {
+    const limit = typeof maxChars === 'number' && maxChars > 0 ? maxChars : 4000;
+    const turns = Array.isArray(history) ? history.filter(function (h) { return h && h.text; }) : [];
+    const lines = turns.slice(-8).map(function (h) {
+      return (h.role === 'user' ? '用户：' : '助手：') + String(h.text).replace(/\s+/g, ' ').trim();
+    });
+    let out = lines.join('\n');
+    if (out.length > limit) out = '…' + out.slice(out.length - limit);
+    return out;
+  }
+
+  /* ── P1 体检（GET /api/doctor）──────────────────────────────── */
+
+  // 挡派单的项：items 里 blocks 为真、且状态不是绿的那几条。
+  function blockedItemsOf(doctor) {
+    const items = doctor && Array.isArray(doctor.items) ? doctor.items : [];
+    return items.filter(function (it) {
+      return it && it.blocks === true && it.state !== 'green';
+    });
+  }
+
+  const DOCTOR_LABEL = { green: '一切正常', yellow: '有点小毛病', red: '有故障' };
+  const DOCTOR_TONE = { green: 'ok', yellow: 'warn', red: 'bad' };
+  const DOCTOR_ITEM_TEXT = { green: '正常', yellow: '要留意', red: '坏了' };
+
+  // 顶部徽章三态：只认 overall 与 blocked；拿不到体检结果时染红但不禁发送。
+  function doctorBadgeOf(doctor) {
+    const d = doctor || {};
+    if (d.fetchFailed) {
+      return {
+        level: 'red',
+        tone: 'bad',
+        label: '体检没回话',
+        blocked: false,
+        blockedCount: 0,
+        sendAllowed: true,
+        note: '',
+        title: '没能从电脑上拿到体检结果' + (d.status ? '（HTTP ' + d.status + '）' : '') +
+          '。聊天可能还能用，点徽章刷新看看。',
+      };
+    }
+    const overall = DOCTOR_LABEL[d.overall] ? d.overall : 'yellow';
+    const blocking = blockedItemsOf(d);
+    const blocked = d.blocked === true || blocking.length > 0;
+    const note = blocked
+      ? (blocking.length > 0 ? '有 ' + blocking.length + ' 项挡着，先修' : '有东西挡着，先修')
+      : '';
+    let title = DOCTOR_LABEL[overall];
+    if (blocking.length > 0) {
+      title += '：' + blocking.map(function (it) { return it.title || it.id || '一项'; }).join('、');
+    }
+    title += note ? '。' + note + '。' : '。点徽章看逐项体检。';
+    return {
+      level: overall,
+      tone: DOCTOR_TONE[overall],
+      label: DOCTOR_LABEL[overall] + (blocked ? '（先修）' : ''),
+      blocked: blocked,
+      blockedCount: blocking.length,
+      sendAllowed: !blocked,
+      note: note,
+      title: title,
+    };
+  }
+
+  function fixErrorText(input) {
+    const i = input || {};
+    const body = i.body || {};
+    const message = body.message || i.message || '';
+    if (i.networkError) return '没连上电脑：这次没修成，电脑那边什么都没变。';
+    if (i.status === 401 || body.error === 'unauthorized') return '登录过期了，改不了电脑上的东西。重新打开你的专属链接。';
+    if (i.status === 403 || body.error === 'access_denied') return '这台设备进不来，改不了电脑上的东西。连回家里的 Wi-Fi 再试。';
+    if (i.status === 503 || body.error === 'bridge_token_missing') return '电脑上还没配好钥匙，什么都执行不了。';
+    if (i.status === 404 || i.status === 405) return '电脑上的版本还没有「一键修」这个接口，只能手动处理。';
+    if (i.status >= 500) return '电脑那边出错了（HTTP ' + i.status + '）' + (message ? '：' + message : '。');
+    if (body.error === 'unknown_action') return '这个修法电脑不认识（版本对不上），先手动看一眼。';
+    if (body.error === 'fix_failed') return '修了但没成：' + (message || '电脑没给原因。');
+    return message || '没修成，电脑没给原因。';
+  }
+
+  // 体检面板：配置错置顶（带字段路径），逐条列 items，能修就给按钮；
+  // 单项修复失败的原因就地挂在那一项下面，不静默。
+  function doctorPanelHtml(doctor, opts) {
+    const d = doctor || {};
+    const o = opts || {};
+    const out = [];
+    out.push('<div class="panel-head"><span>体检</span>' +
+      '<button class="panel-close" data-panel="close" title="关掉">✕</button></div>');
+    if (d.fetchFailed) {
+      out.push('<div class="panel-empty">拿不到体检结果' +
+        (d.status ? '（HTTP ' + escHtml(d.status) + '）' : '') + '：' +
+        escHtml(d.message || '先看电脑上的服务还开着没。') + '</div>');
+      return out.join('');
+    }
+    const items = Array.isArray(d.items) ? d.items : [];
+    const blocking = blockedItemsOf(d);
+    const overall = DOCTOR_LABEL[d.overall] ? d.overall : 'yellow';
+    out.push('<div class="panel-summary panel-' + DOCTOR_TONE[overall] + '">' +
+      escHtml(DOCTOR_LABEL[overall] + ' · 共 ' + items.length + ' 项检查') +
+      (blocking.length > 0 ? escHtml('，其中 ' + blocking.length + ' 项挡着派单') : '') + '</div>');
+    if (d.configError && (d.configError.message || d.configError.path)) {
+      out.push('<div class="panel-config-error">' +
+        '<div class="cfg-title">配置写错了，先改这里</div>' +
+        '<div class="cfg-path">字段：<code>' + escHtml(d.configError.path || '(没给字段名)') + '</code></div>' +
+        '<div class="cfg-msg">' + escHtml(d.configError.message || '电脑没说哪里不对。') + '</div>' +
+        '</div>');
+    }
+    if (items.length === 0) {
+      out.push('<div class="panel-empty">没有可列的检查项。</div>');
+      return out.join('');
+    }
+    out.push('<ul class="doctor-items">');
+    let shownError = false;
+    for (let i = 0; i < items.length; i += 1) {
+      const it = items[i] || {};
+      const state = it.state === 'green' || it.state === 'yellow' || it.state === 'red' ? it.state : 'yellow';
+      out.push('<li class="doctor-item doctor-' + state +
+        (it.blocks === true && state !== 'green' ? ' doctor-blocking' : '') + '">');
+      out.push('<div class="doctor-row"><span class="doctor-title">' +
+        escHtml(it.title || it.id || '一项检查') + '</span><span class="doctor-state">' +
+        escHtml(DOCTOR_ITEM_TEXT[state]) + '</span></div>');
+      if (it.detail) out.push('<div class="doctor-detail">' + escHtml(it.detail) + '</div>');
+      if (it.blocks === true) out.push('<div class="doctor-tag">挡着派单</div>');
+      if (it.fix) {
+        const fixing = o.fixing === it.fix;
+        const err = o.error && o.error.action === it.fix ? o.error.text : '';
+        if (err) shownError = true;
+        out.push('<div class="doctor-fix-row">' +
+          '<button class="doctor-fix" data-fix="' + escHtml(it.fix) + '"' + (fixing ? ' disabled' : '') + '>' +
+          escHtml(fixing ? '正在修…' : (it.fixLabel || '修一下')) + '</button>' +
+          (err ? '<span class="doctor-fix-error">' + escHtml(err) + '</span>' : '') +
+          '</div>');
+      }
+      out.push('</li>');
+    }
+    out.push('</ul>');
+    if (o.error && !shownError) {
+      out.push('<div class="panel-fix-error">' + escHtml(o.error.text) + '</div>');
+    }
+    return out.join('');
+  }
+
+  /* ── P1 待批（GET /api/approvals、POST /api/approvals/answer）── */
+
+  function plusMinutes(iso, minutes) {
+    const t = Date.parse(String(iso == null ? '' : iso));
+    if (!isFinite(t)) return '';
+    return new Date(t + minutes * 60000).toISOString();
+  }
+
+  // 剩余时间；没给过期时间就当 created_at + 30 分钟（契约里的默认有效期）。
+  function remainingText(expiresAt, nowMs) {
+    const end = Date.parse(String(expiresAt == null ? '' : expiresAt));
+    if (!isFinite(end)) return '没说多久过期';
+    const now = typeof nowMs === 'number' ? nowMs : Date.now();
+    const ms = end - now;
+    if (ms <= 0) return '已过期';
+    const min = Math.ceil(ms / 60000);
+    if (min <= 1) return '还剩不到 1 分钟';
+    if (min < 60) return '还剩 ' + min + ' 分钟';
+    return '还剩 ' + Math.floor(min / 60) + ' 小时 ' + (min % 60) + ' 分';
+  }
+
+  const APPROVAL_DEAD_NOTE = '这条已过期';
+
+  // 一张待批卡。expired / already_decided 一律标灰并写「这条已过期」，
+  // 出错的原因写在卡片里，绝不把服务端 JSON 塞进聊天气泡。
+  function approvalCardHtml(item, opts) {
+    const it = item || {};
+    const o = opts || {};
+    const id = String(it.id == null ? '' : it.id);
+    const result = o.result || (it.expired === true ? 'expired' : '');
+    const dead = result === 'expired' || result === 'already_decided';
+    const gone = result === 'not_found';
+    const done = result === 'done';
+    const frozen = dead || gone || done;
+    const expiresAt = it.expiresAt || plusMinutes(it.createdAt, 30);
+    const remaining = dead ? APPROVAL_DEAD_NOTE
+      : gone ? '这条不在了'
+      : done ? '你已经答过了'
+      : remainingText(expiresAt, o.now);
+    const tier = typeof it.tier === 'number' ? it.tier : Number(it.tier);
+    const cls = 'approval-card' + (frozen ? ' approval-dead' : '') + (done ? ' approval-done' : '');
+    const disabled = frozen || o.sending === true ? ' disabled' : '';
+    const out = [];
+    out.push('<div class="' + cls + '" data-approval-id="' + escHtml(id) + '">');
+    out.push('<h4>' + escHtml(tier > 0 ? '要你批一下 · 第 ' + tier + ' 档' : '要你批一下') + '</h4>');
+    out.push('<div class="approval-summary">' + escHtml(it.summary || '（没写要做什么）') + '</div>');
+    out.push('<div class="approval-meta"><span>' + escHtml(it.taskId || '没有任务号') +
+      '</span><span>' + escHtml(remaining) + '</span></div>');
+    out.push('<div class="actions">' +
+      '<button class="btn-approve" data-answer="agree" data-approval="' + escHtml(id) + '"' + disabled + '>同意</button>' +
+      '<button class="btn-reject" data-answer="reject" data-approval="' + escHtml(id) + '"' + disabled + '>拒绝</button>' +
+      '</div>');
+    if (dead) out.push('<div class="approval-dead-note">' + escHtml(APPROVAL_DEAD_NOTE) + '：超时按拒绝算，不用再点。</div>');
+    else if (gone) out.push('<div class="approval-dead-note">这条审批不在了，可能已经被处理或清掉。</div>');
+    else if (done) out.push('<div class="approval-dead-note">已经答过了，账本里记下了。</div>');
+    if (o.error) out.push('<div class="approval-error">' + escHtml(o.error) + '</div>');
+    out.push('</div>');
+    return out.join('');
+  }
+
+  function approvalErrorText(input) {
+    const i = input || {};
+    const body = i.body || {};
+    const code = body.error || i.errorCode || '';
+    const message = body.message || i.message || '';
+    if (i.networkError) return '没连上电脑：这条审批还挂着，网络回来再点一次。';
+    if (i.status === 401 || code === 'unauthorized') return '登录过期了，批不了。重新打开你的专属链接。';
+    if (i.status === 403 || code === 'access_denied') return '这台设备进不来，批不了。连回家里的 Wi-Fi 再试。';
+    if (i.status === 503) return '电脑上还没配好钥匙，现在什么都执行不了。';
+    if (i.status >= 500) return '电脑那边出了点问题（HTTP ' + i.status + '）。这条还在，稍后再点。';
+    if (code === 'not_found') return '这条审批不在了，可能已经被处理或清掉。刷新一下看看。';
+    if (code === 'expired') return '这条已过期：超时按拒绝算，账本里已经记下了。';
+    if (code === 'already_decided') return '这条已经处理过了，不会再记第二次。';
+    return message || '没批成，电脑没给原因。';
+  }
+
+  /* ── P1 反馈（POST /feedback）───────────────────────────────── */
+
+  // 没有 taskId（纯对话回答）就整块不出现。
+  function feedbackHtml(taskId, vote) {
+    const id = String(taskId == null ? '' : taskId);
+    if (!id) return '';
+    const up = vote === 'up';
+    const down = vote === 'down';
+    const voted = up || down;
+    const state = voted ? ' disabled' : '';
+    return '<div class="feedback-row" data-task-id="' + escHtml(id) + '">' +
+      '<button class="feedback-btn' + (up ? ' picked' : '') + '" data-vote="up"' + state + '>对了</button>' +
+      '<button class="feedback-btn' + (down ? ' picked' : '') + '" data-vote="down"' + state + '>不对</button>' +
+      (voted ? '<span class="feedback-done">' + (up ? '记下了：这条对了' : '记下了：这条不对') + '</span>' : '') +
+      '</div>';
+  }
+
+  function feedbackErrorText(input) {
+    const i = input || {};
+    const body = i.body || {};
+    if (i.networkError) return '没记上：没连上电脑，回头再点一次。';
+    if (i.status === 401 || body.error === 'unauthorized') return '没记上：登录过期了，重新打开专属链接。';
+    if (i.status === 403) return '没记上：这台设备进不来。';
+    if (i.status === 404) return '没记上：电脑上还没有这条反馈接口。';
+    if (i.status >= 500) return '没记上：电脑那边出错了（HTTP ' + i.status + '），回头再点一次。';
+    return '没记上：' + (body.message || i.message || '电脑没给原因') + '，回头再点一次。';
+  }
+
+  /* ── P1 任务详情（/mcp brain_status 的单张卡）──────────────── */
+
+  function taskIdOf(text) {
+    const m = /task_[A-Za-z0-9_-]+/.exec(String(text == null ? '' : text));
+    return m ? m[0] : '';
+  }
+
+  // 比 parseCard 多取「到哪了」「做过什么」「等你定的事」，给右侧详情用。
+  function parseTaskDetail(text) {
+    const src = String(text == null ? '' : text);
+    const card = parseCard(src);
+    function line(label) {
+      const m = new RegExp('^' + label + '：(.+)$', 'm').exec(src);
+      return m ? m[1].trim() : null;
+    }
+    return {
+      taskId: card.taskId,
+      intent: card.intent,
+      stateLabel: card.stateLabel,
+      state: card.state,
+      live: card.state === 'running',
+      progress: line('到哪了'),
+      steps: line('做过什么'),
+      why: card.why,
+      blockedBy: card.blockedBy,
+      waitingOn: line('等你定的事'),
+    };
+  }
+
+  const LEDGER_TEXT = {
+    '待启动': '排上了，还没开始动手。',
+    '执行中': '正在做，面板会自己刷新。',
+    '等待输入': '等你回一句话才能接着做。',
+    '阻塞': '卡住了，得先解掉挡着它的事。',
+    '完成': '做完了。',
+    '终止': '停了，没做完。',
+  };
+
+  function ledgerStateText(label) {
+    const key = String(label == null ? '' : label);
+    return LEDGER_TEXT[key] || '状态不明：账本里没这一行。';
+  }
+
+  function taskDetailHtml(detail, opts) {
+    const d = detail || {};
+    const o = opts || {};
+    const out = [];
+    out.push('<div class="detail-head"><strong>任务详情</strong>' +
+      '<button class="detail-close" data-detail="close" title="关掉">✕</button></div>');
+    if (o.loading) {
+      out.push('<div class="detail-empty">正在读任务 ' + escHtml(d.taskId || '') + '…</div>');
+      return out.join('');
+    }
+    if (d.intent) out.push('<div class="detail-intent">' + escHtml(d.intent) + '</div>');
+    if (d.stateLabel) {
+      out.push('<div class="detail-state detail-state-' + escHtml(d.state) + '">状态：' +
+        escHtml(d.stateLabel) + ' —— ' + escHtml(ledgerStateText(d.stateLabel)) + '</div>');
+    } else {
+      out.push('<div class="detail-state">状态不明：账本里没写这一行。</div>');
+    }
+    const rows = [
+      ['进度', d.progress],
+      ['做过什么', d.steps],
+      ['为什么', d.why],
+      ['卡在谁', d.blockedBy],
+      ['等你定的事', d.waitingOn],
+    ];
+    const shown = rows.filter(function (r) { return r[1]; });
+    if (shown.length > 0) {
+      out.push('<ul class="detail-lines">');
+      for (let i = 0; i < shown.length; i += 1) {
+        out.push('<li><span>' + escHtml(shown[i][0]) + '：</span>' + escHtml(shown[i][1]) + '</li>');
+      }
+      out.push('</ul>');
+    }
+    if (d.live) out.push('<div class="detail-live">还在跑，每几秒自己刷新一次。</div>');
+    if (d.taskId) out.push('<div class="detail-foot">' + escHtml(d.taskId) + '</div>');
+    if (o.error) out.push('<div class="detail-error">' + escHtml(o.error) + '</div>');
+    return out.join('');
+  }
+
+  return {
+    escHtml: escHtml,
+    bubbleHtml: bubbleHtml,
+    progressHtml: progressHtml,
+    parseCard: parseCard,
+    serviceStateOf: serviceStateOf,
+    failureOf: failureOf,
+    submitTool: submitTool,
+    promoteTool: promoteTool,
+    buildContext: buildContext,
+    blockedItemsOf: blockedItemsOf,
+    doctorBadgeOf: doctorBadgeOf,
+    doctorPanelHtml: doctorPanelHtml,
+    fixErrorText: fixErrorText,
+    remainingText: remainingText,
+    approvalCardHtml: approvalCardHtml,
+    approvalErrorText: approvalErrorText,
+    feedbackHtml: feedbackHtml,
+    feedbackErrorText: feedbackErrorText,
+    taskIdOf: taskIdOf,
+    parseTaskDetail: parseTaskDetail,
+    ledgerStateText: ledgerStateText,
+    taskDetailHtml: taskDetailHtml,
+  };
+}
+/* dot:chat-state (end) */
+
+const CS = dotChatState();
+window.DotChatState = CS; // 只为调试；页面自身用 CS
+
+// 桥可能挂在域名根路径（/chat），也可能经反代挂在子路径（/dot/chat，公网固定入口）。
+// 从当前路径推断 base，所有请求都带上它，两种部署都能用。
+const BASE = location.pathname.startsWith('/dot/') ? '/dot' : '';
+const API_BASE = BASE;
+// 桥等大脑 65 秒；页面再留 5 秒，让 dot-core 的 504 结构化错误先到。
+const CHAT_TIMEOUT_MS = 70000;
 let bridgeToken = '';
 let currentTaskId = null;
 let isProcessing = false;
+let voiceState = { upstream: false, asr: 'browser', tts: 'browser' };
+let mediaRecorder = null;
+let audioChunks = [];
+let recordingStartedAt = 0;
+let browserRecognition = null;
+let autoSpeak = false; // 回复朗读开关；点气泡上的 🔊 单独播
+let serviceReady = null; // null=还没探过 / false=启动中 / true=就绪
+let startupTimer = null;
+let serviceState = CS.serviceStateOf({ httpStatus: 200, body: { brain: { online: null, mode: 'unknown' } } });
+let chatHistory = [];
+let lastIntent = '';
 
-// 读桥 token
-async function init() {
+// ── P1：体检 / 待批 / 任务详情的运行态 ──
+let doctorData = null;      // /api/doctor 原样返回，或 {fetchFailed:true,…}
+let doctorBadge = null;     // doctorBadgeOf 的结果；有值就压过 /health 的两态
+let doctorTimer = null;
+let doctorPanelOpen = false;
+let doctorFix = null;       // 正在修的 action id
+let doctorFixError = null;  // { action, text }
+let approvalTimer = null;
+let approvalItems = [];
+let approvalUi = {};        // id → { result, error, sending }
+let approvalListError = '';
+let detailTaskId = null;
+let detailTimer = null;
+let detailBusy = false;
+let detailLast = null;
+
+async function probeService() {
   try {
-    const resp = await fetch('/api/token');
-    const data = await resp.json();
-    bridgeToken = data.token || '';
+    const r = await fetch(BASE + '/health', { credentials: 'same-origin', signal: AbortSignal.timeout(3000) });
+    let body = null;
+    try { body = await r.json(); } catch (e) { body = null; }
+    const st = CS.serviceStateOf({ httpStatus: r.status, body: body });
+    applyServiceState(st);
+    if (st.level === 'ready') {
+      if (serviceReady !== true) {
+        serviceReady = true;
+        clearInterval(startupTimer);
+        startupTimer = null;
+        loadTaskList();
+      }
+      return;
+    }
+    serviceReady = false;
+    // 口令不对时 /health 仍会回「就绪」（它不验用户口令），别再轮询把它盖回去。
+    if (st.level !== 'expired') startProbeTimer();
   } catch (e) {
-    // 尝试从 localStorage
-    bridgeToken = localStorage.getItem('dot-bridge-token') || '';
+    serviceReady = false;
+    applyServiceState(CS.serviceStateOf({ networkError: e }));
+    startProbeTimer();
   }
-  loadTaskList();
+}
+
+function startProbeTimer() {
+  if (startupTimer !== null) return;
+  startupTimer = setInterval(probeService, 3000);
+}
+
+function applyServiceState(st) {
+  serviceState = st;
+  applyBadge();
+  applySendAllowed();
+}
+
+// 有体检结果时徽章只认 /api/doctor（绿/黄/红三态）；没拿到才退回 /health 那套。
+function applyBadge() {
+  const badge = document.getElementById('statusBadge');
+  if (!badge) return;
+  if (doctorBadge) {
+    badge.textContent = doctorBadge.label;
+    badge.className = 'badge badge-doctor-' + doctorBadge.tone;
+    badge.title = doctorBadge.title + '（点开看体检面板）';
+    return;
+  }
+  const st = serviceState;
+  badge.textContent = st.label;
+  badge.className = 'badge ' +
+    (st.level === 'ready' ? 'badge-ready' : st.level === 'starting' ? 'badge-starting' : 'badge-error');
+  badge.title = st.title || '';
+}
+
+let sendBlockedHint = false;
+
+function applySendAllowed() {
+  const btn = document.getElementById('sendBtn');
+  const blocked = doctorBadge !== null && doctorBadge.sendAllowed === false;
+  if (btn) btn.disabled = isProcessing || !(serviceState && serviceState.sendAllowed !== false) || blocked;
+  const hint = document.getElementById('inputHint');
+  if (!hint) return;
+  if (blocked) {
+    hint.textContent = doctorBadge.note || '先修好挡着的东西再发';
+    sendBlockedHint = true;
+  } else if (sendBlockedHint) {
+    // 修好了就把提示语还原，别让「有 N 项挡着」一直挂着。
+    hint.textContent = 'Enter 发送 · Shift+Enter 换行 · 默认只回答，想让它动手点「让它去做」';
+    sendBlockedHint = false;
+  }
+}
+
+function reconnectService() {
+  serviceReady = null;
+  startProbeTimer();
+  probeService();
+}
+
+// 初始化：token、语音状态
+async function init() {
+  // 先显示启动中，再后台探测；页面不用等网关。
+  applyServiceState(serviceState);
+  startProbeTimer();
+  probeService();
+  // 服务端已实现 GET /api/token（此前前端在调但服务端没有，token 只能手填）。
+  // 若从 ?token= 进来，Cookie 已由服务端种下；这里拿到 token 后存一份给 fetch 用。
+  try {
+    const resp = await fetch(BASE + '/api/token', { credentials: 'same-origin' });
+    if (resp.ok) {
+      const data = await resp.json();
+      bridgeToken = data.token || '';
+      if (data.access && data.access !== 'loopback') {
+        window.__accessMode = data.access;
+        const badge = document.getElementById('statusBadge');
+        if (badge) badge.title = '手机接入：' +
+          ({lan:'局域网', tunnel:'穿透', relay:'中继'}[data.access] || data.access);
+      }
+    }
+  } catch (e) { /* 下面兜底 */ }
+  if (!bridgeToken) bridgeToken = localStorage.getItem('dot-bridge-token') || '';
+
+  // 探语音：上游可用就启用按钮，否则录音走浏览器 Web Speech。
+  try {
+    const r = await fetch(BASE + '/api/voice/status');
+    if (r.ok) {
+      const v = await r.json();
+      voiceState.upstream = v.enabled && v.key_present;
+      voiceState.asr = v.asr || 'browser';
+      voiceState.tts = v.tts || 'browser';
+    }
+  } catch (e) { /* 保持浏览器兜底 */ }
+  document.getElementById('micBtn').disabled = false;
+  if (voiceState.upstream) {
+    document.getElementById('inputHint').textContent =
+      '语音已接百度（点麦克风说话） · Enter 发送 · 默认只回答，想让它动手点「让它去做」';
+  }
+
+  // 徽章点开体检面板
+  const badge = document.getElementById('statusBadge');
+  if (badge) badge.addEventListener('click', function () { toggleDoctorPanel(); });
+
+  // 体检每 30 秒一次，待批每 15 秒一次；两者互不影响聊天主流程。
+  refreshDoctor();
+  doctorTimer = setInterval(refreshDoctor, 30000);
+  refreshApprovals();
+  approvalTimer = setInterval(refreshApprovals, 15000);
+
+  // 任务列表等服务就绪后再拉（probeService 里会调），这里不再直接拉。
 }
 
 function newTask() {
   currentTaskId = null;
+  chatHistory = [];
   document.getElementById('chatTitle').textContent = '新对话';
   document.getElementById('messages').innerHTML = `
     <div class="message assistant">
       <div class="avatar">🤖</div>
-      <div class="bubble">你好！我是 alldot。描述你想做的事，我来动手。<br><br>比如：<br>• 把下载文件夹的 PDF 按月份归档<br>• 打开某个网页，填个表单<br>• 整理桌面文件<br>• 监控某个网页的变化</div>
+      <div class="bubble">你好！我是 alldot。先问一句，我直接回答；要我去电脑上动手，你说完点「让它去做」。<br><br>比如：<br>• 下载文件夹里有多少个 PDF？<br>• 把下载文件夹的 PDF 按月份归档<br>• 整理桌面文件<br>• 监控某个网页的变化</div>
     </div>
   `;
 }
 
-async function send() {
+/* ── 语音：上游优先，浏览器 Web Speech 兜底 ── */
+
+async function toggleVoice() {
+  const btn = document.getElementById('micBtn');
+  if (btn.classList.contains('recording')) {
+    stopRecording();
+    return;
+  }
+  if (!voiceState.upstream && fallbackSpeechAvailable()) {
+    startBrowserDictation();
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = () => { stream.getTracks().forEach(t => t.stop()); submitRecordedAudio(); };
+    mediaRecorder.start();
+    recordingStartedAt = Date.now();
+    btn.classList.add('recording');
+    btn.textContent = '⏹';
+    document.getElementById('inputHint').textContent = '正在录音… 再点一次结束（最长 58 秒）';
+  } catch (e) {
+    appendMessage('assistant', '拿不到麦克风权限：' + e.message + '。可以改用打字。');
+  }
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  const btn = document.getElementById('micBtn');
+  btn.classList.remove('recording');
+  btn.textContent = '🎤';
+  document.getElementById('inputHint').textContent = '识别中…';
+}
+
+async function submitRecordedAudio() {
+  const seconds = (Date.now() - recordingStartedAt) / 1000;
+  if (seconds < 0.5) {
+    document.getElementById('inputHint').textContent = '录音太短，没提交';
+    resetVoiceHint();
+    return;
+  }
+  const blob = new Blob(audioChunks, { type: mediaRecorder?.mimeType || 'audio/webm' });
+  try {
+    const resp = await fetch(BASE + '/api/voice/transcript', {
+      method: 'POST',
+      headers: { 'Content-Type': blob.type, 'x-voice-filename': 'voice.webm' },
+      body: blob,
+      credentials: 'same-origin',
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) throw new Error(data.reason || data.message || '识别失败');
+    const text = (data.text || '').trim();
+    if (!text) throw new Error('没听清，再说一次');
+    document.getElementById('input').value = text;
+    resetVoiceHint();
+    send();
+  } catch (e) {
+    document.getElementById('inputHint').textContent = '识别失败：' + e.message;
+    resetVoiceHint();
+  }
+}
+
+function fallbackSpeechAvailable() {
+  return typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
+}
+
+function startBrowserDictation() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { appendMessage('assistant', '这台设备的浏览器不支持语音识别，请打字。'); return; }
+  browserRecognition = new SR();
+  browserRecognition.lang = 'zh-CN';
+  browserRecognition.interimResults = false;
+  browserRecognition.onresult = (e) => {
+    const text = e.results[0][0].transcript.trim();
+    if (text) { document.getElementById('input').value = text; send(); }
+  };
+  browserRecognition.onerror = (e) => {
+    document.getElementById('inputHint').textContent = '浏览器语音识别出错：' + e.error;
+    resetVoiceHint();
+  };
+  browserRecognition.start();
+  document.getElementById('inputHint').textContent = '正在听（浏览器识别）… 说完自动发送';
+}
+
+function resetVoiceHint() {
+  setTimeout(() => {
+    document.getElementById('inputHint').textContent = voiceState.upstream
+      ? '语音已接百度（点麦克风说话） · Enter 发送 · Shift+Enter 换行'
+      : 'Enter 发送 · Shift+Enter 换行 · 支持自然语言描述任务';
+  }, 2500);
+}
+
+/** 朗读一段文字：上游 TTS 优先，失败回浏览器 speechSynthesis。 */
+async function speakText(text) {
+  if (!text || !text.trim()) return;
+  const clean = text.slice(0, 400).trim();
+  if (voiceState.upstream) {
+    try {
+      const resp = await fetch(BASE + '/api/voice/speech', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: clean }),
+        credentials: 'same-origin',
+      });
+      if (resp.ok) {
+        const url = URL.createObjectURL(await resp.blob());
+        const audio = new Audio(url);
+        audio.onended = () => URL.revokeObjectURL(url);
+        await audio.play();
+        return;
+      }
+    } catch (e) { /* 落到浏览器朗读 */ }
+  }
+  if ('speechSynthesis' in window) {
+    const u = new SpeechSynthesisUtterance(clean);
+    u.lang = 'zh-CN';
+    window.speechSynthesis.speak(u);
+  }
+}
+
+/** 调桥的 MCP：只发 one-shot 请求，返回 {resp, body}；网络错误由调用方接。 */
+async function mcpCall(tool, args, timeoutMs) {
+  const resp = await fetch(API_BASE + '/mcp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-dot-bridge-token': bridgeToken },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: Date.now(),
+      method: 'tools/call',
+      params: { name: tool, arguments: args || {} },
+    }),
+    credentials: 'same-origin',
+    signal: AbortSignal.timeout(timeoutMs || CHAT_TIMEOUT_MS),
+  });
+  let body = null;
+  try { body = await resp.json(); } catch (e) { body = null; }
+  return { resp: resp, body: body };
+}
+
+function send() {
   const input = document.getElementById('input');
   const text = input.value.trim();
   if (!text || isProcessing) return;
-
   input.value = '';
-  isProcessing = true;
-  document.getElementById('sendBtn').disabled = true;
-  document.getElementById('statusBadge').textContent = '工作中…';
-
-  // 显示用户消息
-  appendMessage('user', text);
-
-  // 显示进度
-  const progressEl = appendProgress();
-
-  try {
-    // 调桥 API 创建任务
-    const resp = await fetch(API_BASE + '/mcp', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-dot-bridge-token': bridgeToken,
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: Date.now(),
-        method: 'tools/call',
-        params: {
-          name: 'brain_task',
-          arguments: {
-            intent: text,
-            declared: {},
-          },
-        },
-      }),
-    });
-
-    const data = await resp.json();
-    const resultText = data?.result?.content?.[0]?.text || JSON.stringify(data);
-
-    // 更新进度
-    updateProgress(progressEl, 'done', '任务已创建，开始执行…');
-
-    // 显示结果
-    appendMessage('assistant', resultText);
-
-    // 刷新任务列表
-    loadTaskList();
-
-  } catch (e) {
-    updateProgress(progressEl, 'failed', '出错了：' + e.message);
-    appendMessage('assistant', '抱歉，出错了：' + e.message);
-  }
-
-  isProcessing = false;
-  document.getElementById('sendBtn').disabled = false;
-  document.getElementById('statusBadge').textContent = '就绪';
+  sendText(text);
 }
 
-function appendMessage(role, text) {
+/** 默认通道：只回答，不建任务。用户点「让它去做」才走 promoteToTask。 */
+async function sendText(text) {
+  if (!text || isProcessing) return;
+  lastIntent = text;
+  isProcessing = true;
+  applySendAllowed();
+  if (serviceReady === true && !doctorBadge) document.getElementById('statusBadge').textContent = '工作中…';
+
+  appendMessage('user', text);
+  chatHistory.push({ role: 'user', text: text });
+  const context = CS.buildContext(chatHistory.slice(0, -1), 4000);
+  const progressEl = appendProgress('active', '正在想…');
+
+  try {
+    const tool = CS.submitTool(text, context);
+    const { resp, body } = await mcpCall(tool.name, tool.arguments, CHAT_TIMEOUT_MS);
+    if (!resp.ok) {
+      noteServiceFailure(resp.status, body);
+      const failure = CS.failureOf({ stage: 'http', status: resp.status, body: body });
+      updateProgress(progressEl, 'failed', '没发出去');
+      showFailure(failure, text);
+      return;
+    }
+    if (body && body.error) {
+      const failure = CS.failureOf({
+        stage: 'rpc', status: resp.status, body: body,
+        rpcCode: body.error.code, rpcMessage: body.error.message,
+      });
+      updateProgress(progressEl, 'failed', '这次没成功');
+      showFailure(failure, text);
+      return;
+    }
+    const result = body && body.result;
+    if (result && result.isError) {
+      const sc = result.structuredContent || {};
+      const failure = CS.failureOf({
+        stage: 'tool', status: 200, body: sc,
+        message: result.content && result.content[0] ? result.content[0].text : '',
+        timeoutMs: typeof sc.timeout_ms === 'number' ? sc.timeout_ms : null,
+      });
+      updateProgress(progressEl, 'failed', '这次没成功');
+      showFailure(failure, text);
+      return;
+    }
+    const reply = result && result.content && result.content[0] ? result.content[0].text : '';
+    if (!reply) {
+      const failure = CS.failureOf({ stage: 'rpc', rpcCode: -32603, rpcMessage: '返回里没有文本' });
+      updateProgress(progressEl, 'failed', '这次没成功');
+      showFailure(failure, text);
+      return;
+    }
+
+    progressEl.remove();
+    // 回答里带任务号才给反馈按钮；纯对话回答 taskId 为空，按钮不出现。
+    const replySc = result && result.structuredContent ? result.structuredContent : {};
+    const replyTaskId = (replySc.task_id ? CS.taskIdOf(replySc.task_id) : '') || (CS.parseCard(reply).taskId || '');
+    appendMessage('assistant', reply, { taskId: replyTaskId });
+    chatHistory.push({ role: 'assistant', text: reply });
+    if (autoSpeak) speakText(reply);
+  } catch (e) {
+    applyServiceState(CS.serviceStateOf({ networkError: e }));
+    startProbeTimer();
+    const failure = CS.failureOf({ stage: 'http', networkError: true });
+    updateProgress(progressEl, 'failed', '没发出去');
+    showFailure(failure, text);
+  } finally {
+    isProcessing = false;
+    applyServiceState(serviceState);
+  }
+}
+
+/** 用户点了「让它去做」才走这里：真正建任务并轮询。 */
+async function promoteToTask(intent) {
+  if (!intent || isProcessing) return;
+  isProcessing = true;
+  applySendAllowed();
+  const progressEl = appendProgress('active', '正在派任务…');
+
+  try {
+    const tool = CS.promoteTool(intent);
+    const { resp, body } = await mcpCall(tool.name, tool.arguments, 30000);
+    if (!resp.ok) {
+      noteServiceFailure(resp.status, body);
+      const failure = CS.failureOf({ stage: 'http', status: resp.status, body: body });
+      updateProgress(progressEl, 'failed', '没发出去');
+      showFailure(failure, intent);
+      return;
+    }
+    if (body && body.error) {
+      const failure = CS.failureOf({
+        stage: 'rpc', status: resp.status, body: body,
+        rpcCode: body.error.code, rpcMessage: body.error.message,
+      });
+      updateProgress(progressEl, 'failed', '这次没成功');
+      showFailure(failure, intent);
+      return;
+    }
+    const result = body && body.result;
+    if (result && result.isError) {
+      const sc = result.structuredContent || {};
+      const failure = CS.failureOf({
+        stage: 'tool', status: 200, body: sc,
+        message: result.content && result.content[0] ? result.content[0].text : '',
+      });
+      updateProgress(progressEl, 'failed', '任务没派出去');
+      showFailure(failure, intent);
+      return;
+    }
+
+    const resultText = result && result.content && result.content[0] ? result.content[0].text : '';
+    if (!resultText) {
+      const failure = CS.failureOf({ stage: 'rpc', rpcCode: -32603, rpcMessage: '返回里没有文本' });
+      updateProgress(progressEl, 'failed', '任务没派出去');
+      showFailure(failure, intent);
+      return;
+    }
+
+    const idMatch = /task_[A-Za-z0-9_-]+/.exec(resultText);
+    if (idMatch) {
+      currentTaskId = idMatch[0];
+      updateProgress(progressEl, 'active', '任务 ' + currentTaskId + ' 已创建，执行中…');
+      pollTask(progressEl, currentTaskId, 0);
+    } else {
+      updateProgress(progressEl, 'done', '任务已提交');
+    }
+    appendMessage('assistant', resultText, { taskId: idMatch ? idMatch[0] : '' });
+    loadTaskList();
+  } catch (e) {
+    applyServiceState(CS.serviceStateOf({ networkError: e }));
+    startProbeTimer();
+    const failure = CS.failureOf({ stage: 'http', networkError: true });
+    updateProgress(progressEl, 'failed', '没发出去');
+    showFailure(failure, intent);
+  } finally {
+    isProcessing = false;
+    applySendAllowed();
+  }
+}
+
+function showFailure(failure, intent) {
+  appendMessage('error', failure.text);
+  if (failure.action) appendAction(failure.action, intent);
+}
+
+/** 发送时撞上设备/口令类失败，顺手把顶部徽章改成同一说法，别让徽章还说「就绪」。 */
+function noteServiceFailure(status, body) {
+  const tokenMissing = body && (body.error === 'bridge_token_missing' ||
+    (body.token && body.token.configured === false));
+  if (status === 401 || status === 403 || (status === 503 && tokenMissing)) {
+    applyServiceState(CS.serviceStateOf({ httpStatus: status, body: body }));
+  }
+}
+
+function appendAction(action, intent) {
   const messages = document.getElementById('messages');
-  const div = document.createElement('div');
-  div.className = 'message ' + role;
-
-  // 简单 Markdown 渲染
-  let html = text
-    .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\n/g, '<br>');
-
-  div.innerHTML = `
-    <div class="avatar">${role === 'user' ? '👤' : '🤖'}</div>
-    <div class="bubble">${html}</div>
-  `;
-  messages.appendChild(div);
+  const row = document.createElement('div');
+  row.className = 'message assistant action-row';
+  row.innerHTML = '<div class="bubble"><button class="action-btn">' +
+    CS.escHtml(action.label || '重试') + '</button></div>';
+  row.querySelector('button').onclick = function () { runAction(action, intent); };
+  messages.appendChild(row);
   messages.scrollTop = messages.scrollHeight;
 }
 
-function appendProgress() {
+function runAction(action, intent) {
+  if (action.kind === 'promote') { promoteToTask(intent); return; }
+  if (action.kind === 'retry') { sendText(intent || lastIntent); return; }
+  if (action.kind === 'reauth') {
+    localStorage.removeItem('dot-bridge-token');
+    bridgeToken = '';
+    location.reload();
+    return;
+  }
+  if (action.kind === 'reload') { location.reload(); return; }
+  reconnectService();
+}
+
+/** 轮询任务进度：最多 20 次、每次 5 秒（100 秒）。状态只按卡片里的「状态：」行走。 */
+async function pollTask(el, taskId, round) {
+  if (round >= 20 || !el.isConnected) return;
+  await new Promise(function (r) { setTimeout(r, 5000); });
+  try {
+    const { resp, body } = await mcpCall('brain_status', { task_id: taskId }, 8000);
+    const card = resp.ok && body && body.result && body.result.content && body.result.content[0]
+      ? body.result.content[0].text : '';
+    if (card) {
+      const parsed = CS.parseCard(card);
+      if (parsed.state === 'done') {
+        updateProgress(el, 'done', '任务完成');
+        return;
+      }
+      if (parsed.state === 'failed') {
+        updateProgress(el, 'failed', parsed.blockedBy || '任务终止');
+        return;
+      }
+      if (parsed.state === 'waiting') {
+        const waitingOn = parsed.blockedBy && parsed.blockedBy !== '没有' ? parsed.blockedBy : parsed.stateLabel;
+        updateProgress(el, 'paused', '等你决定：' + waitingOn);
+      } else {
+        updateProgress(el, 'active', parsed.milestone || '任务进行中…');
+      }
+    }
+  } catch (e) { /* 轮询失败不影响主流程 */ }
+  pollTask(el, taskId, round + 1);
+}
+
+function speakBubble(btn) {
+  const bubble = btn.closest('.message').querySelector('.bubble');
+  if (bubble) speakText(bubble.innerText);
+}
+
+function appendMessage(role, text, opts) {
+  const messages = document.getElementById('messages');
+  const div = document.createElement('div');
+  const isError = role === 'error';
+  const o = opts || {};
+  div.className = 'message ' + (isError ? 'assistant error' : role);
+
+  // bubbleHtml 先转义再渲染；失败气泡不挂朗读。
+  const avatar = role === 'user' ? '👤' : isError ? '⚠️' : '🤖';
+  // 只有带任务号的助手回答才挂「对了 / 不对」；纯对话回答不显示。
+  const fb = role === 'assistant' && !isError ? CS.feedbackHtml(o.taskId || '', '') : '';
+  div.innerHTML = '<div class="avatar">' + avatar + '</div>' +
+    '<div class="body"><div class="bubble">' + CS.bubbleHtml(role, text) + '</div>' + fb + '</div>';
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+  if (fb) {
+    const row = div.querySelector('.feedback-row');
+    if (row) bindFeedback(row, String(o.taskId), div);
+  }
+  return div;
+}
+
+function appendProgress(state, text) {
   const messages = document.getElementById('messages');
   const div = document.createElement('div');
   div.className = 'progress';
-  div.innerHTML = `
-    <div class="progress-title">
-      <div class="spinner"></div>
-      <span>正在处理…</span>
-    </div>
-    <ul class="progress-steps">
-      <li class="active">▸ 理解任务中</li>
-    </ul>
-  `;
+  div.innerHTML = CS.progressHtml(state || 'active', text || '正在处理…');
   messages.appendChild(div);
   messages.scrollTop = messages.scrollHeight;
   return div;
 }
 
 function updateProgress(el, state, text) {
-  const steps = el.querySelector('.progress-steps');
-  const title = el.querySelector('.progress-title span');
+  if (!el || !el.isConnected) return;
+  el.innerHTML = CS.progressHtml(state, text);
+  const messages = document.getElementById('messages');
+  if (messages) messages.scrollTop = messages.scrollHeight;
+}
 
-  if (state === 'done') {
-    title.textContent = '完成';
-    el.querySelector('.spinner').style.display = 'none';
-    steps.innerHTML = `<li class="done">✓ ${text}</li>`;
-  } else if (state === 'failed') {
-    title.textContent = '失败';
-    el.querySelector('.spinner').style.display = 'none';
-    steps.innerHTML = `<li class="failed">✗ ${text}</li>`;
-  } else {
-    steps.innerHTML += `<li class="active">▸ ${text}</li>`;
+/* ══ 体检徽章 + 体检面板（GET /api/doctor、POST /api/fix） ═══════════ */
+
+async function fetchDoctor() {
+  try {
+    const r = await fetch(API_BASE + '/api/doctor', {
+      headers: { 'x-dot-bridge-token': bridgeToken },
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(8000),
+    });
+    let body = null;
+    try { body = await r.json(); } catch (e) { body = null; }
+    if (!r.ok || !body || body.ok === false) {
+      return { fetchFailed: true, status: r.status, message: (body && body.message) || '' };
+    }
+    return body;
+  } catch (e) {
+    return { fetchFailed: true, networkError: true, message: '没连上电脑。' };
   }
+}
+
+async function refreshDoctor() {
+  doctorData = await fetchDoctor();
+  // 后端还没上这条路由（404/405），或者整机网络就不通时，别把徽章染红，
+  // 退回 /health 那套两态，让「连不上电脑」「登录过期了」这些更准的说法留着。
+  if (doctorData && (doctorData.status === 404 || doctorData.status === 405 || doctorData.networkError)) {
+    doctorBadge = null;
+  } else {
+    doctorBadge = CS.doctorBadgeOf(doctorData);
+  }
+  applyBadge();
+  applySendAllowed();
+  if (doctorPanelOpen) renderDoctorPanel();
+}
+
+async function toggleDoctorPanel(force) {
+  doctorPanelOpen = typeof force === 'boolean' ? force : !doctorPanelOpen;
+  const panel = document.getElementById('doctorPanel');
+  if (!panel) return;
+  panel.hidden = !doctorPanelOpen;
+  if (!doctorPanelOpen) return;
+  renderDoctorPanel();
+  await refreshDoctor();
+}
+
+function renderDoctorPanel() {
+  const panel = document.getElementById('doctorPanel');
+  if (!panel || !doctorPanelOpen) return;
+  panel.innerHTML = CS.doctorPanelHtml(doctorData, { fixing: doctorFix, error: doctorFixError });
+  const closeBtn = panel.querySelector('.panel-close');
+  if (closeBtn) closeBtn.addEventListener('click', function () { toggleDoctorPanel(false); });
+  panel.querySelectorAll('button[data-fix]').forEach(function (b) {
+    b.addEventListener('click', function () { runFix(b.dataset.fix); });
+  });
+}
+
+// 点「修一下」：POST /api/fix，然后不管成败都重读 /api/doctor 刷新面板。
+async function runFix(action) {
+  if (!action || doctorFix) return;
+  doctorFix = action;
+  doctorFixError = null;
+  renderDoctorPanel();
+  try {
+    const r = await fetch(API_BASE + '/api/fix', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-dot-bridge-token': bridgeToken },
+      body: JSON.stringify({ action: action }),
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(30000),
+    });
+    let body = null;
+    try { body = await r.json(); } catch (e) { body = null; }
+    if (!r.ok || !body || body.ok === false) {
+      doctorFixError = { action: action, text: CS.fixErrorText({ status: r.status, body: body }) };
+    }
+  } catch (e) {
+    doctorFixError = { action: action, text: CS.fixErrorText({ networkError: true }) };
+  }
+  doctorFix = null;
+  await refreshDoctor();
+}
+
+/* ══ 待批卡（GET /api/approvals、POST /api/approvals/answer） ═══════ */
+
+async function refreshApprovals() {
+  try {
+    const r = await fetch(API_BASE + '/api/approvals', {
+      headers: { 'x-dot-bridge-token': bridgeToken },
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(8000),
+    });
+    let body = null;
+    try { body = await r.json(); } catch (e) { body = null; }
+    // 后端还没上这条路由：当作没有待批，不弹错。
+    if (r.status === 404 || r.status === 405) {
+      approvalItems = [];
+      approvalListError = '';
+      renderApprovals();
+      return;
+    }
+    if (!r.ok || !body || body.ok === false) {
+      approvalListError = CS.approvalErrorText({ status: r.status, body: body });
+      renderApprovals();
+      return;
+    }
+    approvalListError = '';
+    approvalItems = Array.isArray(body.items) ? body.items : [];
+    renderApprovals();
+  } catch (e) {
+    approvalListError = CS.approvalErrorText({ networkError: true });
+    renderApprovals();
+  }
+}
+
+function renderApprovals() {
+  const stack = document.getElementById('approvalStack');
+  if (!stack) return;
+  const now = Date.now();
+  const parts = [];
+  // 列表拉不到时只在已有卡片的情况下说明原因，否则每次抖一下都往页面上写一行。
+  if (approvalListError && approvalItems.length > 0) {
+    parts.push('<div class="approval-error">' + CS.escHtml(approvalListError) + '</div>');
+  }
+  for (let i = 0; i < approvalItems.length; i += 1) {
+    const it = approvalItems[i];
+    if (!it || !it.id) continue;
+    const ui = approvalUi[it.id] || {};
+    parts.push(CS.approvalCardHtml(it, {
+      now: now,
+      result: ui.result || '',
+      error: ui.error || '',
+      sending: ui.sending === true,
+    }));
+  }
+  stack.innerHTML = parts.join('');
+  stack.classList.toggle('has-items', parts.length > 0);
+  stack.querySelectorAll('button[data-answer]').forEach(function (b) {
+    b.addEventListener('click', function () { answerApproval(b.dataset.approval, b.dataset.answer); });
+  });
+}
+
+async function answerApproval(id, answer) {
+  if (!id || !answer) return;
+  const ui = approvalUi[id] || (approvalUi[id] = {});
+  if (ui.sending) return;
+  ui.sending = true;
+  ui.error = '';
+  renderApprovals();
+  try {
+    const r = await fetch(API_BASE + '/api/approvals/answer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-dot-bridge-token': bridgeToken },
+      body: JSON.stringify({ id: id, answer: answer }),
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(15000),
+    });
+    let body = null;
+    try { body = await r.json(); } catch (e) { body = null; }
+    ui.sending = false;
+    if (r.ok && body && body.ok !== false) {
+      ui.result = body.decision === 'expired' ? 'expired' : 'done';
+    } else if (body && (body.error === 'expired' || body.error === 'already_decided')) {
+      ui.result = body.error;
+    } else {
+      ui.result = '';
+      ui.error = CS.approvalErrorText({ status: r.status, body: body });
+    }
+  } catch (e) {
+    ui.sending = false;
+    ui.error = CS.approvalErrorText({ networkError: true });
+  }
+  renderApprovals();
+  if (!ui.error) {
+    setTimeout(refreshApprovals, 900);
+    setTimeout(loadTaskList, 900);
+  }
+}
+
+/* ══ 回答下面的「对了 / 不对」（POST /feedback） ════════════════════ */
+
+function bindFeedback(row, taskId, messageEl) {
+  row.querySelectorAll('.feedback-btn').forEach(function (b) {
+    b.addEventListener('click', function () { sendFeedback(taskId, b.dataset.vote, messageEl); });
+  });
+}
+
+async function sendFeedback(taskId, vote, messageEl) {
+  if (!taskId || !vote) return;
+  const row = messageEl.querySelector('.feedback-row');
+  if (!row || row.dataset.locked === '1') return;
+  row.dataset.locked = '1';
+  // 先按「点过了」重新渲染，按钮立刻置灰，不等网络。
+  row.innerHTML = CS.feedbackHtml(taskId, vote);
+  let reason = '';
+  try {
+    const r = await fetch(API_BASE + '/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-dot-bridge-token': bridgeToken },
+      // 桥的 handleFeedback 认的是 task_id + verdict(good/bad)，不是接口契约里写的 taskId/vote。
+      body: JSON.stringify({ task_id: taskId, verdict: vote === 'up' ? 'good' : 'bad' }),
+      credentials: 'same-origin',
+      signal: AbortSignal.timeout(10000),
+    });
+    let body = null;
+    try { body = await r.json(); } catch (e) { body = null; }
+    if (!r.ok || !body || body.ok === false) {
+      reason = CS.feedbackErrorText({ status: r.status, body: body });
+    }
+  } catch (e) {
+    reason = CS.feedbackErrorText({ networkError: true });
+  }
+  if (reason) {
+    // 没记上要说出来，并把按钮放开让人再点。
+    row.dataset.locked = '';
+    row.innerHTML = CS.feedbackHtml(taskId, '') +
+      '<span class="feedback-done">' + CS.escHtml(reason) + '</span>';
+    bindFeedback(row, taskId, messageEl);
+  }
+}
+
+/* ══ 任务详情侧板（沿用 /mcp 的 brain_status） ═════════════════════ */
+
+function markActiveTask(taskId) {
+  document.querySelectorAll('.task-item').forEach(function (el) {
+    if (taskId && el.dataset.taskId === taskId) el.classList.add('active');
+    else el.classList.remove('active');
+  });
+}
+
+function bindDetailClose(pane) {
+  const btn = pane.querySelector('[data-detail="close"]');
+  if (btn) btn.addEventListener('click', closeTaskDetail);
+}
+
+async function openTaskDetail(taskId) {
+  if (!taskId) return;
+  detailTaskId = taskId;
+  detailLast = null;
+  detailBusy = false;
+  if (detailTimer !== null) { clearInterval(detailTimer); detailTimer = null; }
+  const pane = document.getElementById('detailPane');
+  if (!pane) return;
+  pane.hidden = false;
+  pane.innerHTML = CS.taskDetailHtml({ taskId: taskId }, { loading: true });
+  bindDetailClose(pane);
+  markActiveTask(taskId);
+  await loadTaskDetail();
+}
+
+function closeTaskDetail() {
+  detailTaskId = null;
+  detailLast = null;
+  if (detailTimer !== null) { clearInterval(detailTimer); detailTimer = null; }
+  const pane = document.getElementById('detailPane');
+  if (pane) {
+    pane.hidden = true;
+    pane.innerHTML = '';
+  }
+  markActiveTask(null);
+}
+
+async function loadTaskDetail() {
+  const taskId = detailTaskId;
+  if (!taskId || detailBusy) return;
+  detailBusy = true;
+  let text = '';
+  let error = '';
+  try {
+    const { resp, body } = await mcpCall('brain_status', { task_id: taskId }, 8000);
+    text = resp.ok && body && body.result && body.result.content && body.result.content[0]
+      ? body.result.content[0].text : '';
+    if (!resp.ok) {
+      error = CS.failureOf({ stage: 'http', status: resp.status, body: body }).text;
+    } else if (!text) {
+      error = '电脑没回这个任务的内容，可能任务号不对。';
+    }
+  } catch (e) {
+    error = CS.failureOf({ stage: 'http', networkError: true }).text;
+  }
+  detailBusy = false;
+  // 读的过程中用户点了别的任务，丢掉这次结果。
+  if (detailTaskId !== taskId) return;
+  detailLast = text ? CS.parseTaskDetail(text) : { taskId: taskId, state: 'unknown', live: false };
+  if (!detailLast.taskId) detailLast.taskId = taskId;
+  renderTaskDetail(error);
+  scheduleDetailPoll();
+}
+
+function renderTaskDetail(error) {
+  const pane = document.getElementById('detailPane');
+  if (!pane || pane.hidden) return;
+  pane.innerHTML = CS.taskDetailHtml(detailLast, { error: error || '' });
+  bindDetailClose(pane);
+}
+
+// 还在跑就一直刷；做完或停了一次就停表。
+function scheduleDetailPoll() {
+  if (detailTimer !== null) { clearInterval(detailTimer); detailTimer = null; }
+  if (!detailTaskId || !detailLast || !detailLast.live) return;
+  detailTimer = setInterval(function () { loadTaskDetail(); }, 4000);
 }
 
 async function loadTaskList() {
   try {
-    const resp = await fetch(API_BASE + '/mcp', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-dot-bridge-token': bridgeToken,
-      },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: Date.now(),
-        method: 'tools/call',
-        params: {
-          name: 'brain_status',
-          arguments: { task_id: '*' },
-        },
-      }),
-    });
-    const data = await resp.json();
-    // 解析任务列表（简化版）
-    const text = data?.result?.content?.[0]?.text || '';
+    const { resp, body } = await mcpCall('brain_status', {}, 8000);
+    if (!resp.ok || !body || !body.result) return;
+    const text = body.result.content && body.result.content[0] ? body.result.content[0].text : '';
     const list = document.getElementById('taskList');
+    if (!list) return;
     list.innerHTML = '';
-    // 显示几条最近的（从 text 里解析）
-    if (text.includes('task_')) {
-      const matches = text.match(/【任务 (task_\w+)】(.+?)$/gm) || [];
-      for (const m of matches.slice(0, 10)) {
-        const idMatch = /task_(\w+)/.exec(m);
-        const title = m.replace(/【任务 task_\w+】/, '').slice(0, 40);
-        const item = document.createElement('div');
-        item.className = 'task-item';
-        item.innerHTML = `
-          <div class="title"><span class="status status-running"></span>${title || '任务'}</div>
-          <div class="meta"><span>${idMatch ? idMatch[1].slice(0, 8) : ''}</span></div>
-        `;
-        list.appendChild(item);
-      }
+    if (!text.includes('task_')) return;
+    // 每张卡以【任务 开头；整段切块后按「状态：」行取状态，不对全文做关键词猜测。
+    const chunks = text.split(/(?=【任务 )/).filter(function (s) { return s.indexOf('【任务 ') === 0; });
+    for (const chunk of chunks.slice(0, 10)) {
+      const card = CS.parseCard(chunk);
+      if (!card.taskId) continue;
+      const statusClass = card.state === 'done' ? 'status-done'
+        : card.state === 'failed' ? 'status-failed'
+        : card.state === 'running' ? 'status-running'
+        : 'status-pending';
+      const title = (card.intent || '任务').slice(0, 40);
+      const item = document.createElement('div');
+      item.className = 'task-item';
+      item.dataset.taskId = card.taskId;
+      item.title = '点开看详情';
+      item.innerHTML =
+        '<div class="title"><span class="status ' + statusClass + '"></span>' + CS.escHtml(title) + '</div>' +
+        '<div class="meta"><span>' + CS.escHtml(card.taskId.slice(0, 8)) + '</span><span>' +
+        CS.escHtml(card.stateLabel || '未知') + '</span></div>';
+      // 任务项可点：右侧开详情（brain_status 单查这一个任务）。
+      item.addEventListener('click', function () { openTaskDetail(card.taskId); });
+      if (detailTaskId === card.taskId) item.classList.add('active');
+      list.appendChild(item);
     }
   } catch (e) {
     // 静默失败
@@ -649,6 +2280,14 @@ document.getElementById('input').addEventListener('input', function() {
 });
 
 init();
+
+// PWA：注册 service worker，让「添加到主屏幕」后能离线打开壳、有独立图标。
+// 注册失败不影响聊天（比如 http 非 localhost 环境不支持 SW）。
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register(BASE + '/sw.js').catch(function () {});
+  });
+}
 </script>
 </body>
 </html>

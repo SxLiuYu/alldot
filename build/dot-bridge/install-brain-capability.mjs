@@ -138,7 +138,7 @@ const nowMs = Date.now();
 const item = {
   name,
   kind: "mcp",
-  description: "dot 大脑（dot-bridge）：brain_task / brain_status / brain_answer / brain_cancel",
+  description: "dot 大脑（dot-bridge）：brain_task / brain_status / brain_answer / brain_cancel / brain_reply",
   createdBy: previous?.createdBy ?? null,
   createdAt: previous?.createdAt ?? nowMs,
   updatedAt: nowMs,
@@ -209,4 +209,4 @@ if (!okItem || missing.length > 0) {
   die(`回读校验失败（能力项=${okItem}，没挂上的机器人=${missing.join(",") || "无"}）。备份在 ${backupPath}，可以手工回滚`);
 }
 console.log(`[install-brain] 写完并回读通过：${botIds.length} 个机器人都挂上了 ${name}`);
-console.log("[install-brain] 下一步：起桥 → 再起 ds-bot → 检查 10 个机器人的工具列表里出现 mcp__brain__brain_task。");
+console.log("[install-brain] 下一步：起桥 → 再起 ds-bot → 检查 10 个机器人的工具列表里出现 mcp__brain__brain_task / mcp__brain__brain_reply。");

@@ -53,8 +53,10 @@ export function buildWorkerPrompt(task: TaskRow, approved: readonly string[] = [
     "   点桌面上别的程序、往别的程序里打字、看窗口 → desktop；",
     "   读微信、找会话、发微信 → wechat（发消息要人点同意）；",
     "   看飞书日历、看日程、建日程 → feishu（建日程要人点同意）；",
-    "   在任务声明的工作区里建目录、写文件 → files；",
+    "   在任务声明的工作区里建目录、写文件 → files（路径写工作区内的相对路径，别带盘符；父文件夹要先 mkdir；覆盖同名文件要显式传 overwrite=true）；",
     "   只往练习文件夹里放东西才用 practice；任务跟练习无关时，不许用 practice 假装做完。",
+    "   跑测试、跑构建、看 git 状态 → exec（命令在工作区里执行；npm test、node --test、git status、git diff 这类可以直接跑；发布、删除、往外部下载会出请示卡）。",
+    "   改完代码要自己跑一遍测试再收工，别只说「应该没问题」。",
     "   没有合适的手，就在末尾一句话里说清缺哪只手。",
     "2. 工人会话里每个工具都会过闸门：只读类（read/glob/grep）判档后记账放行；",
     "   exec、写盘、浏览器等按档位处理，第 4 档会出请示卡等人批；",
@@ -64,6 +66,8 @@ export function buildWorkerPrompt(task: TaskRow, approved: readonly string[] = [
     "4. 每做一步先想清楚它能不能重来；拿不准就停下来问，不要猜。",
     "5. 只碰这个任务范围内的东西；任务结束就停手，不要继续动作。",
     "6. 本轮末尾用一段话回报：做了什么、结果怎样、有没有卡住（卡在什么上）。",
+    "7. 看本地文件用 read / glob / grep；不要用浏览器打开 file:// 地址（浏览器只开 http/https，会直接报错）。",
+    "8. practice 手只往练习文件夹里放东西；读文件、改项目代码都不要用它。",
   ].join("\n");
 
   return { message: lines.join("\n"), extraSystemPrompt };

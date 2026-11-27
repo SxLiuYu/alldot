@@ -150,6 +150,42 @@ export const DOT_CORE_CONFIG_SCHEMA = {
         },
       },
     },
+    notify: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        enabled: {
+          type: "boolean",
+          default: D.notify.enabled,
+          description: "把「要你批」和「任务结果」推到手机开关；默认关，配好 webhook 再开",
+        },
+        feishu_webhook: {
+          type: "string",
+          default: D.notify.feishu_webhook,
+          description: "飞书自定义机器人 webhook 地址；不填则走微信通道",
+        },
+        wechat_python: {
+          type: "string",
+          default: D.notify.wechat_python,
+          description: "微信 helper 用的 python.exe；填了才启用微信通道",
+        },
+        wechat_script: {
+          type: "string",
+          default: D.notify.wechat_script,
+          description: "微信 helper 脚本路径（build/tools/wechat-notify.py）",
+        },
+        wechat_marker: {
+          type: "string",
+          default: D.notify.wechat_marker,
+          description: "发送前用来确认当前会话对不对的标记文字（默认 alldot）",
+        },
+        poll_sec: {
+          type: "number",
+          default: D.notify.poll_sec,
+          description: "轮询账本的间隔秒数；只推审批与任务结果，不推进度",
+        },
+      },
+    },
     self_improve: {
       type: "object",
       additionalProperties: false,
@@ -164,6 +200,46 @@ export const DOT_CORE_CONFIG_SCHEMA = {
           default: D.self_improve.max_proposals_per_day,
           description: "每天最多落几条提案（按 UTC 日期算）",
         },
+      },
+    },
+    mobile_access: {
+      type: "object",
+      additionalProperties: false,
+      description: "手机接入方式；默认 loopback（只本机，手机连不上）",
+      properties: {
+        mode: {
+          type: "string",
+          enum: ["loopback", "lan", "tunnel", "relay"],
+          default: D.mobile_access.mode,
+          description: "loopback=只本机；lan=局域网直连；tunnel=内网穿透；relay=自定义中继",
+        },
+        allowed_cidrs: {
+          type: "array",
+          items: { type: "string" },
+          default: D.mobile_access.allowed_cidrs,
+          description: "额外放行的来源 IP/CIDR（留空=按接入模式默认规则）",
+        },
+      },
+    },
+    voice: {
+      type: "object",
+      additionalProperties: false,
+      description: "语音 ASR/TTS 上游；复用 nanoMuse 的 /v1/audio/* 接口，密钥走环境变量，不写进配置",
+      properties: {
+        enabled: { type: "boolean", default: D.voice.enabled, description: "语音开关；默认关" },
+        base_url: {
+          type: "string",
+          default: D.voice.base_url,
+          description: "上游 base URL，不带 /v1",
+        },
+        api_key_env: {
+          type: "string",
+          default: D.voice.api_key_env,
+          description: "上游 API key 的环境变量名（默认 ALLDOT_VOICE_API_KEY）",
+        },
+        voice: { type: "string", default: D.voice.voice, description: "TTS 音色" },
+        max_asr_seconds: { type: "number", default: D.voice.max_asr_seconds },
+        max_tts_chars: { type: "number", default: D.voice.max_tts_chars },
       },
     },
   },

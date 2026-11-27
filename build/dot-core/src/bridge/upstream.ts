@@ -14,6 +14,11 @@
 
 export const DEFAULT_UPSTREAM_BASE_URL = "http://127.0.0.1:18789";
 export const DEFAULT_TIMEOUT_MS = 8000;
+/**
+ * 桥等只回答通道的超时：65s > dot-core 的 55s 中止点。
+ * 正常情况下用户看到的是 dot-core 的 504 结构化错误，而不是桥这边的「连不上」。
+ */
+export const REPLY_CLIENT_TIMEOUT_MS = 65_000;
 
 export class BrainUnavailableError extends Error {
   readonly causeText: string;
@@ -147,5 +152,10 @@ export class BrainClient {
 
   cancel(taskId: string, body: Record<string, unknown>): Promise<HttpResult> {
     return this.post(`/dot/bridge/v1/tasks/${encodeURIComponent(taskId)}/cancel`, body);
+  }
+
+  /** 只回答通道（brain_reply）：等 65s，比 dot-core 自己的 55s 中止点长。 */
+  reply(body: Record<string, unknown>, timeoutMs = REPLY_CLIENT_TIMEOUT_MS): Promise<HttpResult> {
+    return this.post("/dot/bridge/v1/reply", body, timeoutMs);
   }
 }

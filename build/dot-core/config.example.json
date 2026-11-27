@@ -71,8 +71,28 @@
   "say": {
     "enabled": false
   },
+  "notify": {
+    "enabled": false,
+    "feishu_webhook": "",
+    "wechat_python": "",
+    "wechat_script": "",
+    "wechat_marker": "alldot",
+    "poll_sec": 10
+  },
   "self_improve": {
     "enabled": true,
     "max_proposals_per_day": 2
+  },
+  "mobile_access": {
+    "mode": "loopback",
+    "allowed_cidrs": []
+  },
+  "voice": {
+    "enabled": false,
+    "base_url": "https://www.sxliuyu.bond",
+    "api_key_env": "ALLDOT_VOICE_API_KEY",
+    "voice": "alloy",
+    "max_asr_seconds": 58,
+    "max_tts_chars": 450
   }
 }

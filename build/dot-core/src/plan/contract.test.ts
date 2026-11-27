@@ -4,7 +4,7 @@
  * 钉住五件事：
  * 1. parseContract：从 declared_json 解析契约，没写 contract 就返回 null
  * 2. checkContract：约束检查（contains / regex / range / exists / equal）
- * 3. checkContract：交付物检查（step / file / text）
+ * 3. checkContract：交付物检查（step / file / text / check）
  * 4. nextDeliverable：硬约束没满足 → fix_constraint
  * 5. nextDeliverable：都完成 → done
  */
@@ -332,8 +332,7 @@ test("回归：失败步骤不算完成交付物", () => {
   }
 });
 
-test("回归：milestone_seq 按当前里程碑圈定交付物范围", () => {
-  const f = fixture();
+test("回归：milestone_seq 按当前里程碑圈定交付物范围", () => {  const f = fixture();
   try {
     const task = createTask(f.db, {
       intent: "test", source: "test",
@@ -361,6 +360,150 @@ test("回归：milestone_seq 按当前里程碑圈定交付物范围", () => {
     // milestone_seq=2 的 d2 超出范围，只剩 d1
     assert.equal(report!.outstanding.length, 1);
     assert.deepEqual(report!.outstanding, ["d1"]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+// ── 2026-11-27：契约支持「测试通过」当交付物（type: "check"） ──
+
+/** 造一个只有一个 check 交付物的任务，返回任务 id。 */
+function checkTask(
+  db: ReturnType<typeof makeTempDb>,
+  d: Record<string, unknown>,
+): string {
+  const task = createTask(db, {
+    intent: "test", source: "test", state: "running",
+    declared: {
+      contract: {
+        version: 1,
+        goal: "",
+        constraints: [],
+        deliverables: [{ id: "d1", description: "测试通过", done_when: "跑通", ...d }],
+      },
+    },
+  });
+  return task.id;
+}
+
+/** 造一条 exec 成功步骤，结果长成 exec 手真实的形状（data.cmd / exit_code / stdout）。 */
+function execStep(
+  db: ReturnType<typeof makeTempDb>,
+  taskId: string,
+  cmd: string,
+  exitCode: number,
+  stdout: string,
+): void {
+  const step = beginStep(db, { task_id: taskId, run_epoch: 0, kind: "tool", tool: "exec", subject_key: cmd, side_effect: "safe", tier: 4 });
+  const art = putArtifact(db, JSON.stringify({ ok: exitCode === 0, action: "run", data: { cmd, cwd: ".", exit_code: exitCode, stdout } }));
+  endStep(db, step.id, { status: "succeeded", result_ref: art.hash });
+}
+
+test("check：命令跑通且输出匹配 → 交付完成", () => {
+  const f = fixture();
+  try {
+    const taskId = checkTask(f.db, { type: "check", cmd: "node --test", match: "fail 0" });
+    execStep(f.db, taskId, "node --test", 0, "ℹ tests 1\nℹ pass 1\nℹ fail 0");
+
+    const report = checkContract(f.db, taskId);
+    assert.equal(report!.deliverables[0].completed, true);
+    assert.deepEqual(report!.outstanding, []);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("check：退出码非 0 → 不算完成（step 类型会误判）", () => {
+  const f = fixture();
+  try {
+    const taskId = checkTask(f.db, { type: "check", cmd: "node --test" });
+    execStep(f.db, taskId, "node --test", 1, "✖ add(2, 3) === 5\nℹ fail 1");
+
+    const report = checkContract(f.db, taskId);
+    assert.equal(report!.deliverables[0].completed, false);
+    assert.deepEqual(report!.outstanding, ["d1"]);
+    assert.match(report!.deliverables[0].evidence, /退出码 1/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("check：跑的是别的命令 → 不算完成", () => {
+  const f = fixture();
+  try {
+    const taskId = checkTask(f.db, { type: "check", cmd: "node --test" });
+    execStep(f.db, taskId, "cat package.json", 0, '{"name":"x"}');
+
+    const report = checkContract(f.db, taskId);
+    assert.equal(report!.deliverables[0].completed, false);
+    assert.match(report!.deliverables[0].evidence, /没有跑通过/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("check：forbid 命中的输出不算过", () => {
+  const f = fixture();
+  try {
+    const taskId = checkTask(f.db, { type: "check", cmd: "npm test", forbid: "✖" });
+    execStep(f.db, taskId, "npm test", 0, "✔ ok\n✖ 失败用例被吞了");
+
+    const report = checkContract(f.db, taskId);
+    assert.equal(report!.deliverables[0].completed, false);
+    assert.match(report!.deliverables[0].evidence, /禁止内容/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("check：结果不是 JSON 时按原始文本匹配", () => {
+  const f = fixture();
+  try {
+    const taskId = checkTask(f.db, { type: "check", match: "pass 3" });
+    const step = beginStep(f.db, { task_id: taskId, run_epoch: 0, kind: "tool", tool: "exec", subject_key: "s", side_effect: "safe", tier: 1 });
+    const art = putArtifact(f.db, "raw output: pass 3, fail 0");
+    endStep(f.db, step.id, { status: "succeeded", result_ref: art.hash });
+
+    const report = checkContract(f.db, taskId);
+    assert.equal(report!.deliverables[0].completed, true);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("file 交付物：文件在但早于任务创建 → 不认，理由要说清是哪一种", async () => {
+  const f = fixture();
+  try {
+    const { mkdtempSync, writeFileSync, utimesSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const ws = mkdtempSync(join(tmpdir(), "dot-contract-ws-"));
+    try {
+      writeFileSync(join(ws, "老的.txt"), "早就有了", "utf8");
+      const past = Math.floor(Date.now() / 1000) - 86400;
+      utimesSync(join(ws, "老的.txt"), past, past);
+      const task = createTask(f.db, {
+        intent: "写个新文件", source: "test", state: "running",
+        declared: {
+          workspace: ws,
+          contract: {
+            version: 1, goal: "",
+            constraints: [],
+            deliverables: [
+              { id: "old", description: "老文件", type: "file", path: "老的.txt", done_when: "这次建的" },
+              { id: "missing", description: "没有的文件", type: "file", path: "没有.txt", done_when: "建出来" },
+            ],
+          },
+        },
+      });
+      const report = checkContract(f.db, task.id);
+      assert.equal(report!.deliverables[0].completed, false);
+      assert.match(report!.deliverables[0].evidence, /早于这个任务的创建时间/);
+      assert.equal(report!.deliverables[1].completed, false);
+      assert.match(report!.deliverables[1].evidence, /磁盘上没有/);
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
   } finally {
     f.cleanup();
   }

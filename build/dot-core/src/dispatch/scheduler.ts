@@ -10,7 +10,10 @@
  *
  * 三个边界，写死在代码里：
  * - 派发器**不判档、不批审批**。闸门在钩子里（src/hands/builtin.ts、src/hands/hand.ts），
- *   这里只负责别绕过它：不把任务改成 done，也不碰 approvals 表。
+ *   这里只负责别绕过它：不把任务改成 done，也不替人做决定。
+ *   **唯一例外**（2026-11-27 加）：到期的审批单由这里收口（`sweepExpiredApprovals`）。
+ *   不点就永远挂着的路是死锁——真机上账本里 4 个任务因此停了一整天（审批过期了，
+ *   任务还停在 awaiting_approval）。到期按 A.6 的口径算「不同意」，任务随之终止。
  * - 会话超时按「等满 session_timeout_ms」算，不是按 `waitForRun` 一次的返回算。
  *   一次 waitForRun 超时只说明「这个窗口内没结束」，运行可能还在跑，所以继续等。
  * - 完整性校验**每轮要派任务前都跑一次、不缓存**（审核指出过缓存到 stop/start 的问题：
@@ -27,6 +30,7 @@
 
 import {
   claimTask,
+  expireDueApprovals,
   getTask,
   listTasks,
   parseBlockedOn,
@@ -43,6 +47,7 @@ import {
   type TaskRow,
   type TaskState,
 } from "../ledger/index.ts";
+import { resumeAfterDecision } from "./resume.ts";
 import type { DotCoreConfig } from "../config.ts";
 import type { PluginRuntimeLike, SubagentRuntimeLike, SubagentWaitResultLike } from "../plugin-api.ts";
 import { buildWorkerPrompt } from "./prompt.ts";
@@ -224,7 +229,9 @@ export class Dispatcher {
 
     this.ticking = true;
     try {
-      // 先把账本里「该有人管」的任务捞出来：queued + 超时后停在 paused、还没补救过的。
+      // 先把账本里「该有人管」的任务捞出来：到期的审批单、已批准但没重排的、超时后停在 paused、还没补救过的。
+      this.sweepExpiredApprovals();
+      this.sweepResolvedApprovals();
       const revived = this.reviveTimeoutPaused();
       const queued = listTasks(this.db, { state: "queued", newestFirst: false, limit: QUEUE_SCAN_LIMIT });
       if (queued.length === 0) {
@@ -405,6 +412,86 @@ export class Dispatcher {
     this.lastCheckOk = true;
     this.refusalLogged = false;
     return result;
+  }
+
+  /**
+   * 到期的审批单在派发这一轮收口（2026-11-27 加）。
+   *
+   * 为什么必须有人扫：审批只在「有人点」的时候才发现过期（bridge/approvals.ts）。
+   * 没人点，pending 就一直挂着，任务永远停在 awaiting_approval——真机账本里
+   * 有 4 个任务因此停了一整天（11-26 22:00 建的单，第二天还是 awaiting_approval）。
+   *
+   * 到期按 A.6 的口径算「不同意」：expired → resumeAfterDecision 把任务终止。
+   * 这不是替人做决定，是不让「没人管」变成「永远管不了」。
+   */
+  /**
+   * 「已经批了、但任务还挂在等人」的单，要有人把它接上。
+   *
+   * 2026-11-27 真机：手机上点「同意」走的是桥的 `/api/approvals/answer`，它只往
+   * approvals / decisions 两张表写结论（桥从设计上只碰这两张），重排逻辑在网关的
+   * routes.ts 里。结果从桥上批准的卡两张都接不上——审批 approved，任务原地停在
+   * awaiting_approval，epoch 不动。手机上点同意等于没点。
+   *
+   * 这里每轮扫一遍：状态 approved、任务还在 awaiting_approval / paused 的，交给
+   * resumeAfterDecision（它自己会判「还有别的未决单就先不重排」）。已经重排过的
+   * 任务状态不是 awaiting_approval，下一轮自然扫不到，不会重复 bump epoch。
+   */
+  private sweepResolvedApprovals(): string[] {
+    let rows: Array<{ id?: string }> = [];
+    try {
+      rows = this.db
+        .prepare(
+          `SELECT a.id AS id FROM approvals a JOIN tasks t ON t.id = a.task_id
+             WHERE a.status = 'approved' AND t.state IN ('awaiting_approval', 'paused')
+             LIMIT 20`,
+        )
+        .all() as Array<{ id?: string }>;
+    } catch {
+      return [];
+    }
+    const resumed: string[] = [];
+    for (const row of rows) {
+      const id = String(row.id ?? "");
+      if (id === "") continue;
+      try {
+        const result = resumeAfterDecision(this.db, id);
+        if (result.action !== "left") {
+          resumed.push(`${id}→${result.action}`);
+          this.log("info", `审批 ${id} 已批准但任务没重排：补上（${result.detail}）`);
+        }
+      } catch (err) {
+        this.log("warn", `审批 ${id} 补重排失败（下一轮再试）：${(err as Error).message}`);
+      }
+    }
+    return resumed;
+  }
+
+  private sweepExpiredApprovals(): string[] {
+    const now = new Date();
+    let due: Array<{ id?: string }> = [];
+    try {
+      due = this.db
+        .prepare("SELECT id FROM approvals WHERE status = 'pending' AND pending_until < ?")
+        .all(now.toISOString()) as Array<{ id?: string }>;
+    } catch {
+      // 账本这一刻读不了就别把派发带崩，下一轮再来。
+      return [];
+    }
+    if (due.length === 0) return [];
+    expireDueApprovals(this.db, now);
+    const closed: string[] = [];
+    for (const row of due) {
+      const id = String(row.id ?? "");
+      if (id === "") continue;
+      try {
+        const result = resumeAfterDecision(this.db, id);
+        closed.push(`${id}→${result.action}`);
+        this.log("info", `审批 ${id} 已过期：${result.detail}`);
+      } catch (err) {
+        this.log("warn", `审批 ${id} 过期后收口失败（下一轮再试）：${(err as Error).message}`);
+      }
+    }
+    return closed;
   }
 
   /**

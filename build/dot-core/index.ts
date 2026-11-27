@@ -29,7 +29,12 @@ import {
   verifyLedger,
   type LedgerDb,
 } from "./src/ledger/index.ts";
-import { gbToBytes, sweepSnapshots } from "./src/maintenance/index.ts";
+import {
+  TIGHT_FREE_BYTES,
+  freeBytesAt,
+  gbToBytes,
+  sweepSnapshotsAsync,
+} from "./src/maintenance/index.ts";
 import {
   BridgeNotifyClient,
   readBridgeToken,
@@ -58,6 +63,10 @@ import {
   readFeishuCredsFromFile,
   createWechatHand,
   runFilesHand,
+  runExecHand,
+  EXEC_TOOL_NAME,
+  EXEC_TOOL_DESCRIPTION,
+  EXEC_TOOL_PARAMETERS,
   registerIdentityHook,
   registerBuiltinHooks,
   type BuiltinGovernor,
@@ -89,6 +98,7 @@ import { afterSettle, Dispatcher } from "./src/dispatch/index.ts";
 import { createLocalWorkerRuntime, createPoolModelComplete } from "./src/dispatch/local-worker.ts";
 import { runDriftCheck } from "./src/drift/index.ts";
 import { createSayRewriter } from "./src/say/index.ts";
+import { createReplyService, REPLY_TIMEOUT_MS } from "./src/reply/index.ts";
 import { collectMetrics } from "./src/selfeval/index.ts";
 import { skillIndexPath } from "./src/skills/index.ts";
 import { createLiveAutoApproveMaxTier } from "./src/runtime/live-config.ts";
@@ -155,6 +165,34 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * 同一个进程里可能装两份 dot-core：网关先 `[gateway]` 加载一次、再 `[plugins]` 加载一次
+ * （两个 jiti 模块副本，模块级变量互不可见）。派发器有账本锁（`lockKey`）挡着，
+ * 但恢复协议、30 分钟快照巡检、心跳是各跑各的：2026-11-27 17:01 的启动日志里
+ * 「恢复协议」出现两次，快照全树扫描（18 万个文件）也跟着跑两遍。
+ *
+ * 用 globalThis 上一个 symbol 记「这份账本的常驻工作已经有人接了」：
+ * 第一份拿到所有权，后面那份只挂手 / 钩子 / 路由，恢复和定时器交给第一份。
+ * stop() 时释放，所以测试里「起一份、停掉、再起一份（同一个账本）」仍然是正常的主份。
+ */
+const PRIMARY_CLAIM = Symbol.for("dot-core.primary");
+interface PrimaryClaim {
+  ledgerPath: string;
+  at: string;
+}
+function claimPrimary(ledgerPath: string): boolean {
+  const store = globalThis as unknown as Record<symbol, unknown>;
+  const held = store[PRIMARY_CLAIM] as PrimaryClaim | undefined;
+  if (held !== undefined && held.ledgerPath === ledgerPath) return false;
+  store[PRIMARY_CLAIM] = { ledgerPath, at: new Date().toISOString() } satisfies PrimaryClaim;
+  return true;
+}
+function releasePrimary(ledgerPath: string): void {
+  const store = globalThis as unknown as Record<symbol, unknown>;
+  const held = store[PRIMARY_CLAIM] as PrimaryClaim | undefined;
+  if (held !== undefined && held.ledgerPath === ledgerPath) delete store[PRIMARY_CLAIM];
+}
+
+/**
  * 真正干活的部分。单独导出是为了能在测试里用一个假 api 跑完整个装载流程，
  * 不必起 allbot 网关。
  */
@@ -206,14 +244,25 @@ export function registerDotCore(api: PluginApiLike, opts: DotCoreOptions = {}): 
     throw new Error(`dot-core 账本打不开（${paths.ledgerPath}）：${(err as Error).message}`);
   }
 
+  // ── 2.5) 同进程两份 dot-core：常驻工作只给第一份 ─────────────────────────
+  const isPrimary = claimPrimary(paths.ledgerPath);
+  if (!isPrimary) {
+    log(
+      "info",
+      "同一进程里已经有一份 dot-core 在这个账本上跑常驻工作（恢复协议、快照巡检、心跳）：这份只挂手和路由",
+    );
+  }
+
   // ── 3) 心跳（keeper 的 fail-closed 判据）────────────────────────────────
   const heartbeat = new Heartbeat({
     path: heartbeatPathIn(paths.dotDir),
     intervalMs: opts.heartbeatIntervalMs ?? undefined,
     meta: { version: PLUGIN_VERSION, plugin: PLUGIN_ID },
   });
-  heartbeat.start();
-  log("info", `心跳：${heartbeat.path}（间隔 ${heartbeat.intervalMs}ms）`);
+  if (isPrimary) {
+    heartbeat.start();
+    log("info", `心跳：${heartbeat.path}（间隔 ${heartbeat.intervalMs}ms）`);
+  }
 
   // ── 4) 通知通道：请示卡交给桥 ───────────────────────────────────────────
   const notify = async (approvalId: string): Promise<{ ok: boolean; detail: string }> => {
@@ -320,8 +369,18 @@ export function registerDotCore(api: PluginApiLike, opts: DotCoreOptions = {}): 
     parameters: FILES_TOOL_PARAMETERS,
     run: (req) => runFilesHand(handDeps, req),
   }));
+  // 命令手（2026-11-27）：工人的工具表里原来没有它，所以「写完跑测试」只能去点桌面开终端，
+  // 16 步全耗在 desktop 上最后卡住。这里挂进来，带白名单与工作区 cwd，判档交给 judge。
+  addHand(EXEC_TOOL_NAME, () => ({
+    name: EXEC_TOOL_NAME,
+    description: EXEC_TOOL_DESCRIPTION,
+    parameters: EXEC_TOOL_PARAMETERS,
+    run: (req) => runExecHand(handDeps, req),
+  }));
   addHand(DESKTOP_TOOL_NAME, () => {
-    const hand = createDesktopHand(handDeps);
+    // 20 秒（MCP 客户端默认）在复杂屏幕上不够：真机账本里 Snapshot/Screenshot 连续超时把任务打死。
+    // 60 秒只影响单次调用，不是整个任务；真卡住时仍然会中止。
+    const hand = createDesktopHand(handDeps, { timeoutMs: 60_000 });
     return {
       name: DESKTOP_TOOL_NAME,
       description: DESKTOP_TOOL_DESCRIPTION,
@@ -394,12 +453,32 @@ export function registerDotCore(api: PluginApiLike, opts: DotCoreOptions = {}): 
   //    而 gateway_start 在 08:08:49 已触发），所以只在钩子里做恢复 = 一次都不做。
   //    改法：加载时先跑一遍恢复，钩子留着兜住「插件先加载、钩子后触发」的构建；
   //    recover() 自身幂等（src/ledger/recover.ts 注释），跑两次不会重复建单。
-  const runRecovery = (): void => {
+  const runRecovery = (firstTime: boolean): void => {
     const integrity = verifyLedger(db);
     if (!integrity.ok) {
       const detail = `账本完整性校验失败（chain=${integrity.chain.ok}，steps=${integrity.steps.ok}）：拒绝继续，先修账本`;
       log("error", detail);
       throw new Error(detail);
+    }
+    // 僵尸工人行：进程重启后 workers 里还挂着 status='running' 的，都是上一次进程留下的。
+    // 不清就一直"有个工人还在跑"，恢复协议每轮都要照顾它们，日志里也说不清哪个还活着
+    // （2026-11-27 实测积了 7 条 11-25 的）。
+    // 2026-11-27 再收口径：加载时这个进程一步活都还没派，所以**所有** running 行都是死的，
+    // 原来按「半小时没心跳」筛，会把 20 分钟前那次崩溃留下的行留下。钩子里那次（firstTime=false）
+    // 可能已经有本进程的工人在跑，仍按半小时心跳筛，别误杀。
+    // 只改 workers 行、写一条事件留痕，不碰任务状态。
+    const staleCutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const reaped = firstTime
+      ? db.prepare("UPDATE workers SET status = 'lost' WHERE status = 'running'").run()
+      : db
+          .prepare(
+            "UPDATE workers SET status = 'lost' WHERE status = 'running' AND (last_event_at IS NULL OR last_event_at < ?)",
+          )
+          .run(staleCutoff);
+    const reapedCount = Number(reaped.changes ?? 0);
+    if (reapedCount > 0) {
+      appendEvent(db, { type: "workers_reaped", payload: { count: reapedCount, cutoff: staleCutoff } });
+      log("info", `清了 ${reapedCount} 条僵尸工人行（status=running 但超过 30 分钟没心跳）`);
     }
     const report = recover(db, { approvalTtlHours: config.approvals.ttl_hours });
     log(
@@ -408,9 +487,16 @@ export function registerDotCore(api: PluginApiLike, opts: DotCoreOptions = {}): 
         `回队 ${report.tasksRequeued.length}，转等人 ${report.tasksAwaitingHuman.length}）`,
     );
   };
-  runRecovery();
-  const recoverChannel = registerHookCompat(api, "gateway_start", runRecovery, "dot-core.gateway.recover");
-  log("info", `恢复协议已在加载时执行；gateway_start 钩子（${recoverChannel}）再兜一次`);
+  if (isPrimary) runRecovery(true);
+  const recoverChannel = isPrimary
+    ? registerHookCompat(api, "gateway_start", () => runRecovery(false), "dot-core.gateway.recover")
+    : "跳过（同进程已有主份）";
+  log(
+    "info",
+    isPrimary
+      ? `恢复协议已在加载时执行；gateway_start 钩子（${recoverChannel}）再兜一次`
+      : "恢复协议：同进程已有主份在跑，这份跳过",
+  );
 
   // ── 8) 桥：18789 上的 /dot/bridge/v1 ────────────────────────────────────
   // 说人话改写（第 3 步 C）：开关默认关；关着就**不注入** say，桥的卡片逐字不动。
@@ -424,6 +510,13 @@ export function registerDotCore(api: PluginApiLike, opts: DotCoreOptions = {}): 
   const poolJson = createPoolModelComplete(config, undefined, undefined, { maxTokens: 2500 });
   const completeJson = async (prompt: string): Promise<string> =>
     (await poolJson({ messages: [{ role: "user", content: prompt }], tools: [] })).text;
+  // 只回答通道（brain_reply）：只调一次、tools 恒空、预算 2000、55s 中止点。
+  // 与工人的 1200 不一样：长回答需要预算，用户等不了两分钟。
+  const poolReply = createPoolModelComplete(config, undefined, undefined, {
+    maxTokens: 2000,
+    timeoutMs: REPLY_TIMEOUT_MS,
+  });
+  const reply = createReplyService({ db, complete: poolReply, timeoutMs: REPLY_TIMEOUT_MS, logger: log });
   const say = config.say.enabled ? createSayRewriter({ enabled: true, complete }) : undefined;
   // 自我优化要落地的目录：仓库根（本文件在 build/dot-core/ 下，往上一级就是仓库根）
   const selfImproveRoot = fileURLToPath(new URL("../../", import.meta.url)).replace(/[\/]+$/, "");
@@ -498,6 +591,8 @@ export function registerDotCore(api: PluginApiLike, opts: DotCoreOptions = {}): 
           .catch((err: unknown) => log("warn", `提案 ${proposalId} 生成补丁抛错：${(err as Error).message}`));
       },
       ...(say === undefined ? {} : { say }),
+      // 只回答通道的大脑一侧（brain_reply → POST /dot/bridge/v1/reply）。
+      reply,
     },
   );
   log(
@@ -665,31 +760,82 @@ export function registerDotCore(api: PluginApiLike, opts: DotCoreOptions = {}): 
   // ── 快照回收：配置里 keepalive.snapshots_max_gb 早就写了，但一直没人执行 ──
   // 2026-11-25 真机上快照目录长到 12 GB，C 盘只剩 10 MB，之后所有写动作全 ENOSPC。
   // 口径：只删旧任务的快照目录，正在跑/排队的留着；账本里的历史行不动。
-  const sweepNow = (): void => {
+  // 2026-11-27 补：上限不再只看配置。盘剩不到 1.5 GB 时按「腾到 2.5 GB」倒推预算——
+  // 那天 C 盘只剩 0.5 GB、keeper 把接新任务停了，快照 1.8 GB 却没到 5 GB 上限，一个都没删。
+  // 用异步版：快照目录 18 万个文件，同步遍历会把事件循环按住 15～29 秒，
+  // 网关上的手机轮询（/bridge/status）跟着超时。
+  let sweeping = false;
+  // 上一次走完全树之后记下来的占用。用它判断「要不要再走一遍」——
+  // 18 万个文件，哪怕异步走完也要一两分钟，libuv 的 4 个线程全占着，
+  // 网关期间的其它请求（手机轮询）就排队。所以：盘不紧、占用也没接近上限时，干脆不走。
+  let lastTotalBytes: number | null = null;
+  const sweepNow = async (reason: string): Promise<void> => {
+    if (sweeping) return; // 上一轮还没走完就别叠上去
+    sweeping = true;
     try {
       const live = listTasks(db, { state: ["running", "queued"] }).map((t) => t.id);
-      const out = sweepSnapshots({
+      const configured = gbToBytes(config.keepalive.snapshots_max_gb);
+      const out = await sweepSnapshotsAsync({
         root: snapshotsRoot,
-        limitBytes: gbToBytes(config.keepalive.snapshots_max_gb),
+        configuredBytes: configured,
         keepTaskIds: live,
       });
+      lastTotalBytes = out.keptBytes;
+      if (out.limitBytes < configured) {
+        log(
+          "warn",
+          `盘紧（${reason}）：快照预算从 ${Math.round(configured / 1024 / 1024)} MB 压到 ` +
+            `${Math.round(out.limitBytes / 1024 / 1024)} MB（占用 ${Math.round(out.keptBytes / 1024 / 1024)} MB）`,
+        );
+      }
       if (out.removed.length > 0) {
         const freedMb = Math.round(out.freedBytes / 1024 / 1024);
         appendEvent(db, {
           type: "snapshots_reclaimed",
-          payload: { removed: out.removed.length, freed_mb: freedMb, kept_mb: Math.round(out.keptBytes / 1024 / 1024) },
+          payload: {
+            removed: out.removed.length,
+            freed_mb: freedMb,
+            kept_mb: Math.round(out.keptBytes / 1024 / 1024),
+            limit_mb: Math.round(out.limitBytes / 1024 / 1024),
+          },
         });
-        log("info", `快照回收：删了 ${out.removed.length} 个任务目录，腾出 ${freedMb} MB`);
+        log("info", `快照回收（${reason}）：删了 ${out.removed.length} 个任务目录，腾出 ${freedMb} MB`);
       }
     } catch (err) {
       log("warn", `快照回收失败（不影响主流程）：${(err as Error).message}`);
+    } finally {
+      sweeping = false;
     }
   };
-  const sweepTimer = setInterval(sweepNow, 30 * 60 * 1000);
-  (sweepTimer as { unref?: () => void }).unref?.();
-  // 启动后再跑一次：真机上出事的时候，等半小时太久了。
-  const sweepBoot = setTimeout(sweepNow, 15_000);
-  (sweepBoot as { unref?: () => void }).unref?.();
+  /** 盘紧，或者上次量到的占用已经到上限八成：才值得再走一遍全树。 */
+  const worthSweeping = (): boolean => {
+    const free = freeBytesAt(snapshotsRoot);
+    if (free !== null && free < TIGHT_FREE_BYTES) return true;
+    const configured = gbToBytes(config.keepalive.snapshots_max_gb);
+    return lastTotalBytes !== null && lastTotalBytes >= configured * 0.8;
+  };
+  // 定时器也只在主份上起：两份各扫一遍 18 万个文件的快照目录，白白抢 IO。
+  const sweepTimer = isPrimary
+    ? setInterval(() => {
+        if (worthSweeping()) void sweepNow("定时巡检");
+      }, 30 * 60 * 1000)
+    : undefined;
+  (sweepTimer as { unref?: () => void } | undefined)?.unref?.();
+  // 启动后盘紧才立刻走一遍；盘宽裕就等定时那一轮，别在启动窗口里拖慢网关。
+  const sweepBoot = isPrimary
+    ? setTimeout(() => {
+        if (worthSweeping()) void sweepNow("启动巡检");
+      }, 15_000)
+    : undefined;
+  (sweepBoot as { unref?: () => void } | undefined)?.unref?.();
+  // 盘紧时不必等那半小时。量余量是 1 个系统调用，很便宜。
+  const tightTimer = isPrimary
+    ? setInterval(() => {
+        const free = freeBytesAt(snapshotsRoot);
+        if (free !== null && free < TIGHT_FREE_BYTES) void sweepNow("盘紧");
+      }, 5 * 60 * 1000)
+    : undefined;
+  (tightTimer as { unref?: () => void } | undefined)?.unref?.();
   const stopChannel = registerHookCompat(
     api,
     "gateway_stop",
@@ -715,13 +861,16 @@ export function registerDotCore(api: PluginApiLike, opts: DotCoreOptions = {}): 
     stop: () => {
       dispatch.stop();
       heartbeat.stop();
-      clearInterval(sweepTimer);
-      clearTimeout(sweepBoot);
+      if (sweepTimer !== undefined) clearInterval(sweepTimer);
+      if (sweepBoot !== undefined) clearTimeout(sweepBoot);
+      if (tightTimer !== undefined) clearInterval(tightTimer);
       try {
         db.close();
       } catch {
         // 已经关了就算了
       }
+      // 让出主份：同进程里再起一份（测试会这么用）仍然能跑常驻工作。
+      if (isPrimary) releasePrimary(paths.ledgerPath);
     },
   };
 }

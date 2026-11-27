@@ -356,3 +356,27 @@ test("recover：steps 被人改过 → 拒绝恢复，且不把篡改值写进�
     t.cleanup();
   }
 });
+
+test("recover：排队中 / 等人批 / 暂停的任务不动 epoch（只有 running 才作废旧会话）", () => {
+  const t = makeTempDb();
+  try {
+    migrate(t.db);
+    const queued = createTask(t.db, { id: "t-q", state: "queued" });
+    const awaiting = createTask(t.db, { id: "t-a", state: "awaiting_approval" });
+    const paused = createTask(t.db, { id: "t-p", state: "paused" });
+    const running = createTask(t.db, { id: "t-r", state: "running" });
+
+    const report = recover(t.db);
+
+    const bumpedIds = report.runEpochBumped.map((b) => b.taskId);
+    assert.deepEqual(bumpedIds, [running], "只有正在跑的那条要 bump");
+    for (const id of [queued, awaiting, paused]) {
+      const row = t.db.prepare("SELECT run_epoch FROM tasks WHERE id = ?").get(id) as { run_epoch?: number };
+      assert.equal(Number(row.run_epoch), 0, `${id} 不该被 bump`);
+    }
+    const rowR = t.db.prepare("SELECT run_epoch FROM tasks WHERE id = ?").get(running) as { run_epoch?: number };
+    assert.equal(Number(rowR.run_epoch), 1);
+  } finally {
+    t.cleanup();
+  }
+});

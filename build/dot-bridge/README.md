@@ -7,7 +7,7 @@
 - `GET /`：只读状态页，恢复报告在最上面，然后任务进度（账本模板卡原样贴）、待批、组件红绿。
 - `GET /artifact/<hash>`：账本 `artifacts` 明细全文；真被回收回 404「已回收·原因」，
   哈希格式不对回 400、账本打不开回 503（不混用「已回收」）。
-- `POST /mcp`：MCP streamable-http，四个工具 `brain_task / brain_status / brain_answer / brain_cancel`。
+- `POST /mcp`：MCP streamable-http，五个工具 `brain_task / brain_status / brain_answer / brain_cancel / brain_reply`（brain_reply 只回答、不建任务）。
 - `POST /notify`：把一张请示卡转给 ds-bot 8797 的 `send_to_bot`（A.6 的通知转发）。
   `send_to_bot` 的真实契约（`mcp-server.js:44-51/:193/:116-122/:268-276`）要求 `arguments`
   必带 `{bot, text}`；桥默认发总管 Chief 的 id，可用 `--dsbot-bot <id|名字>` 改。

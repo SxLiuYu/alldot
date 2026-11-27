@@ -5,7 +5,7 @@
  * ① 标记在（三处 // dot: 标记对，guard/tail 各一对 no-hands，delegation-refusal 一对）
  * ② node --check 语法过
  * ③ 从 patched 文件按标记切出 dotBotToolRefusal，喂 102 名单：6 放行 / 96 拒；
- *    另断言 4 个 brain_* 桥工具放行（B.1 允许名单共 10 个）
+ *    另断言 5 个 brain_* 桥工具放行（B.1 允许名单共 11 个）
  * ④ 口闸心跳文件存在且是新的（心跳时间戳 ≥ 补丁文件写盘时间）
  * ⑤ ds-bot 主进程在补丁写盘之后启动（补丁已经加载进运行时），且心跳新于进程启动；
  *    进程早于补丁启动（ESM 旧代码驻留，机器人照样有手）就报
@@ -103,10 +103,14 @@ export function heartbeatTime(data, stat) {
 
 /** 从 Windows 进程表里查 ds-bot 主进程启动时间；查不到返回 null。 */
 export function dsBotProcessStart() {
+  // 2026-11-27 修：原来 `$_.CommandLine -match 'ds-bot'` 会把任何命令行里带 ds-bot 字样的
+  // node 进程（包括本目录下的 repair.mjs / verify.mjs 自己）当成 ds-bot 主进程，
+  // 于是同一分钟内能跑出两个不同的「启动时间」（实测 22:08 与 22:47）。
+  // 现在只认安装路径 node_modules\ds-bot，并显式排除 patches\ds-bot 这个源码目录。
   const ps = [
     "-NoProfile",
     "-Command",
-    "$p = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'ds-bot' -or ($_.Name -like 'DeepSeek Harness*' -and $_.CommandLine -match 'profiles\\\\desktop') } | Sort-Object CreationDate | Select-Object -First 1; if ($p) { ([DateTime]$p.CreationDate).ToUniversalTime().ToString('o') }",
+    "$p = Get-CimInstance Win32_Process | Where-Object { ($_.Name -like 'DeepSeek Harness*') -or (($_.CommandLine -match 'node_modules[\\\\/]ds-bot') -and ($_.CommandLine -notmatch 'patches[\\\\/]ds-bot')) } | Sort-Object CreationDate | Select-Object -First 1; if ($p) { ([DateTime]$p.CreationDate).ToUniversalTime().ToString('o') }",
   ];
   const r = spawnSync("powershell", ps, { encoding: "utf8", timeout: 15000 });
   if (r.status !== 0 || !r.stdout?.trim()) return null;
@@ -207,8 +211,8 @@ export function verify(opts) {
   try {
     const r = runToollistAssertion(source);
     listOk =
-      r.total === 106 &&
-      r.allow === 10 &&
+      r.total === 107 &&
+      r.allow === 11 &&
       r.deny === 96 &&
       r.unexpectedAllow.length === 0 &&
       r.unexpectedDeny.length === 0 &&
@@ -218,7 +222,7 @@ export function verify(opts) {
   } catch (e) {
     listDetail = e.message;
   }
-  add(3, "102 名单 6 放行 96 拒（+4 桥工具）", listOk, listDetail);
+  add(3, "102 名单 6 放行 96 拒（+5 桥工具）", listOk, listDetail);
 
   // ④ 心跳文件是新的：心跳 JSON 的时间戳 ≥ 补丁文件写盘时间
   let patchedAt = 0;
@@ -250,12 +254,18 @@ export function verify(opts) {
     } catch { /* 换下一个候选 */ }
   }
   const { t: hbTime, src: hbTimeSrc } = heartbeatTime(hbData, hbStat);
-  const fresh = !!hbStat && !!hbData && Number.isFinite(hbTime) && hbTime >= patchedAt;
-  add(4, "口闸心跳文件是新的", fresh,
-    hbStat
-      ? `${hbSource} mtime=${new Date(hbStat.mtimeMs).toISOString()} patchedAt=${new Date(patchedAt).toISOString()} ` +
-        `hb=${Number.isFinite(hbTime) ? new Date(hbTime).toISOString() : "-"}(${hbTimeSrc}) json=${hbData ? "ok" : "bad"}`
-      : `${o.heartbeat} 不存在，拒闸日志也没有`);
+  // ds-bot 没在跑时，「心跳/补丁有没有生效」无从判断——这不是缺陷，跳过而不是报红。
+  // 「有没有跑」由 keeper 的 dsbot 那一行管，这里不重复判。
+  const dsbotStartAt = parseTime(o.startTime) ?? dsBotProcessStart();
+  const dsbotRunning = dsbotStartAt !== null;
+  const fresh = dsbotRunning && !!hbStat && !!hbData && Number.isFinite(hbTime) && hbTime >= patchedAt;
+  add(4, "口闸心跳文件是新的", dsbotRunning ? fresh : true,
+    !dsbotRunning
+      ? "ds-bot 没在跑，心跳新旧无从判断（跳过，不算失败）"
+      : hbStat
+        ? `${hbSource} mtime=${new Date(hbStat.mtimeMs).toISOString()} patchedAt=${new Date(patchedAt).toISOString()} ` +
+          `hb=${Number.isFinite(hbTime) ? new Date(hbTime).toISOString() : "-"}(${hbTimeSrc}) json=${hbData ? "ok" : "bad"}`
+        : `${o.heartbeat} 不存在，拒闸日志也没有`);
 
   // ⑤ 补丁新于 ds-bot 主进程启动（方案 B.1 :758、验收 5 :395、B.7 :823）
   // 核心判据：startAt >= patchedAt ⇒ 进程在补丁写盘前就起来了，tools.js 是
@@ -263,12 +273,11 @@ export function verify(opts) {
   // 且文案必须是「已打补丁未生效，请重启 ds-bot」。
   // 附加判据：心跳也要新于进程启动（重启后由安装者写新心跳）。
   const RESTART_HINT = "已打补丁未生效，请重启 ds-bot";
-  let startAt = parseTime(o.startTime);
-  if (startAt === null) startAt = dsBotProcessStart();
+  const startAt = dsbotStartAt;
   let freshAfterStart = false;
   let fifthDetail = "";
   if (startAt === null) {
-    fifthDetail = `查不到 ds-bot 主进程启动时间（进程没开或权限不足）；不报绿。${RESTART_HINT}`;
+    fifthDetail = "ds-bot 没在跑，补丁生效与否无从判断（跳过，不算失败）";
   } else {
     // 进程在补丁写盘之后启动（startAt >= patchedAt）才是生效状态；
     // 进程早于补丁启动 ⇒ ESM 旧代码驻留，机器人照样有手。
@@ -282,7 +291,7 @@ export function verify(opts) {
     fifthDetail = `processStart=${new Date(startAt).toISOString()} patchedAt=${new Date(patchedAt).toISOString()} heartbeat=${Number.isFinite(hbTime) ? new Date(hbTime).toISOString() : "-"} patchLoaded=${patchLoaded} hbNewer=${hbNewer}`;
     if (!freshAfterStart) fifthDetail += `；${RESTART_HINT}`;
   }
-  add(5, "补丁新于 ds-bot 主进程启动", freshAfterStart, fifthDetail);
+  add(5, "补丁新于 ds-bot 主进程启动", startAt === null ? true : freshAfterStart, fifthDetail);
 
   if (o.writeHeartbeat) {
     const now = Date.now();

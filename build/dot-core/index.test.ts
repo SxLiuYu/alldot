@@ -131,12 +131,12 @@ test("装载：断言 → 配置 → 账本迁移 → 心跳 → 注册工具/�
     // paths.configPath 是 allbot.json，不是 dot 的 config.json（src/bridge/paths.ts 的口径）
     assert.equal(handle.paths.configPath, join(h.dir, ".allbot", "allbot.json"));
 
-    // 抓手的有七个：练习手 + 工作区文件手 + 电脑手 + 已登录/干净两种浏览器手 + 微信手 + 按编号取回。
+    // 抓手的有八个：练习手 + 工作区文件手 + 命令手 + 电脑手 + 已登录/干净两种浏览器手 + 微信手 + 按编号取回。
     // optional 的语义是「没进 tools.allow 就不给模型」（C:/allbot-public/src/plugins/tools.ts:146-154），
     // 所以给宿主 agent 用的 practice / dot_recall 必须 optional:false，其余五只只给本机工人用。
     assert.deepEqual(
       h.tools.map((t) => t.name).sort(),
-      ["clean_browser", "desktop", "dot_recall", "files", "logged_browser", "practice", "wechat"],
+      ["clean_browser", "desktop", "dot_recall", "exec", "files", "logged_browser", "practice", "wechat"],
     );
     const optionalOf = (name: string): boolean | undefined => {
       const idx = h.tools.findIndex((t) => t.name === name);
@@ -145,13 +145,13 @@ test("装载：断言 → 配置 → 账本迁移 → 心跳 → 注册工具/�
     };
     assert.equal(optionalOf("practice"), false, "practice 要默认可见（以前就是 optional:false）");
     assert.equal(optionalOf("dot_recall"), false, "dot_recall 也要默认可见，否则模型看不到它");
-    for (const name of ["files", "desktop", "logged_browser", "clean_browser", "wechat"]) {
+    for (const name of ["files", "exec", "desktop", "logged_browser", "clean_browser", "wechat"]) {
       assert.equal(optionalOf(name), true, `${name} 只给本机工人用，保持 optional`);
     }
     const practiceTool = h.tools.find((t) => t.name === "practice");
     assert.ok(practiceTool, "练习手必须在");
     assert.ok((practiceTool?.parameters as { properties?: Record<string, unknown> }).properties?.["action"] !== undefined);
-    for (const name of ["files", "desktop", "logged_browser", "clean_browser", "wechat"]) {
+    for (const name of ["files", "exec", "desktop", "logged_browser", "clean_browser", "wechat"]) {
       const tool = h.tools.find((t) => t.name === name);
       assert.ok(tool, `${name} 要注册成工具`);
       assert.ok((tool?.parameters as { properties?: Record<string, unknown> }).properties?.["action"] !== undefined);
@@ -385,4 +385,85 @@ test("清单与 package.json 的 id/版本对得上，默认导出可被 allbot 
   assert.equal(plugin.version, PLUGIN_VERSION);
   assert.equal(typeof plugin.register, "function");
   assert.equal((plugin.configSchema as { type?: string }).type, "object");
+});
+
+test("同一进程装两份 dot-core：第二份不跑恢复协议，stop 后主份能交出去", () => {
+  const h = makeHarness(BASE_ALLBOT);
+  const h2 = makeHarness(BASE_ALLBOT);
+  try {
+    // 两份指向同一个账本：模拟网关 [gateway] 与 [plugins] 各加载一次（两个 jiti 副本）。
+    const first = registerDotCore(h.api, { home: h.dir, dotDir: h.dotDir, heartbeatIntervalMs: 0 });
+    const second = registerDotCore(h2.api, { home: h.dir, dotDir: h.dotDir, heartbeatIntervalMs: 0 });
+    h.db = first.db;
+    h.stop = first.stop;
+
+    assert.ok(
+      h2.logs.some((l) => l.includes("同一进程里已经有一份 dot-core")),
+      `第二份应该知道自己是副份：${h2.logs.join("\n")}`,
+    );
+    assert.ok(
+      !h2.logs.some((l) => l.includes("恢复协议已在加载时执行")),
+      "副份不该跑恢复协议",
+    );
+    assert.ok(
+      h.logs.some((l) => l.includes("恢复协议已在加载时执行")),
+      "主份照常跑恢复协议",
+    );
+
+    // 副份的账本照样能读（手和路由要用），只是常驻工作归主份。
+    const row = second.db.prepare("select count(*) n from tasks").get() as { n: number };
+    assert.equal(row.n, 0);
+
+    // 主份停掉后让出所有权：再起一份仍然是主份（测试里「同一个账本反复起」靠这条）。
+    second.stop();
+    first.stop();
+    h.stop = null;
+    const third = registerDotCore(h2.api, { home: h.dir, dotDir: h.dotDir, heartbeatIntervalMs: 0 });
+    assert.ok(
+      h2.logs.filter((l) => l.includes("恢复协议已在加载时执行")).length >= 1,
+      "主份让出后，新起的一份要能跑恢复协议",
+    );
+    third.stop();
+  } finally {
+    h.cleanup();
+    h2.cleanup();
+  }
+});
+
+test("僵尸工人行：加载时全清，钩子里只清半小时没心跳的（别误杀本进程的工人）", () => {
+  const h = makeHarness(BASE_ALLBOT);
+  try {
+    const first = registerDotCore(h.api, { home: h.dir, dotDir: h.dotDir, heartbeatIntervalMs: 0 });
+    h.db = first.db;
+    const taskId = createTask(first.db, { intent: "跑一条任务", source: "test", state: "running" }).id;
+    const insertWorker = (id: string, at: string) =>
+      first.db
+        .prepare(
+          "INSERT INTO workers (id, task_id, role, session_key, model, status, run_epoch, last_event_at) VALUES (?, ?, 'worker', ?, 'm', 'running', 0, ?)",
+        )
+        .run(id, taskId, `task:${taskId}`, at);
+
+    // 钩子那次：刚心跳过的工人（本进程的）不能被清掉
+    insertWorker("w_fresh", new Date().toISOString());
+    const hook = hookFor(h, "gateway_start");
+    hook.handler({}, {});
+    const fresh = first.db.prepare("SELECT status FROM workers WHERE id = 'w_fresh'").get() as { status: string };
+    assert.equal(fresh.status, "running", "钩子里不许清还活着的工人");
+
+    // 加载那次：这个进程一步活都还没派，账上所有 running 都是上一进程留下的
+    insertWorker("w_stale", new Date(Date.now() - 5 * 60 * 1000).toISOString());
+    first.stop();
+    h.stop = null;
+    const second = registerDotCore(h.api, { home: h.dir, dotDir: h.dotDir, heartbeatIntervalMs: 0 });
+    h.db = second.db;
+    h.stop = second.stop;
+    const rows = second.db.prepare("SELECT id, status FROM workers ORDER BY id").all() as Array<{ id: string; status: string }>;
+    assert.deepEqual(
+      rows.map((r) => `${r.id}=${r.status}`),
+      ["w_fresh=lost", "w_stale=lost"],
+      "加载时要把所有 running 工人行标成 lost（包括 5 分钟前那条）",
+    );
+  } finally {
+    h.cleanup();
+  }
 });

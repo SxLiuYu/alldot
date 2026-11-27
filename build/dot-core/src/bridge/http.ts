@@ -96,11 +96,38 @@ export const HTML_SECURITY_HEADERS: Record<string, string> = {
   "Cache-Control": "no-store",
 };
 
+/**
+ * 聊天页（/chat）专用的 CSP。它跟状态页不同：里面有内联 <script> 和 onclick 处理，
+ * 还要拉 manifest、图标、以及同源 fetch（/mcp、/api/*）。
+ * 之前误用状态页那套 default-src 'none'，把所有内联脚本和 onclick 全拦了，
+ * 结果 send() 根本没定义、点发送没反应（2026-11-26 手机端实测踩到）。
+ * 只放行到「同源」为止：connect-src/img-src/manifest-src/worker-src 都限 'self'。
+ */
+export const CHAT_SECURITY_HEADERS: Record<string, string> = {
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "Content-Security-Policy":
+    "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
+    "img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; " +
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  "Cache-Control": "no-store",
+};
+
 export function sendHtml(res: ServerResponse, status: number, html: string): void {
   res.writeHead(status, {
     "Content-Type": "text/html; charset=utf-8",
     "Content-Length": String(Buffer.byteLength(html)),
     ...HTML_SECURITY_HEADERS,
+  });
+  res.end(html);
+}
+
+/** 聊天页专用：CSP 允许内联脚本与同源资源，其余同状态页。 */
+export function sendChatHtml(res: ServerResponse, status: number, html: string): void {
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": String(Buffer.byteLength(html)),
+    ...CHAT_SECURITY_HEADERS,
   });
   res.end(html);
 }

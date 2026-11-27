@@ -1,11 +1,13 @@
 /**
- * src/bridge/tools.ts —— POST /mcp 暴露的四个工具（B.6、B.1 允许名单）。
+ * src/bridge/tools.ts —— POST /mcp 暴露的五个工具（B.6、B.1 允许名单）。
  *
  * 名字必须与 B.1 的 DOT_BRAIN 完全一致，否则 ds-bot 的口闸会把它们当「手」拒掉：
- *   brain_task / brain_status / brain_answer / brain_cancel
+ *   brain_task / brain_status / brain_answer / brain_cancel / brain_reply
  *
  * 每个工具都只是转发到大脑，桥自己不判六档、不写账本。
  * 唯一在桥这边拦的是「盘紧停接新任务」（B.7：POST /mcp 进来的新任务直接拒、回复带原因）。
+ * brain_reply 只回答、不派活：成功时把大脑的回答原文当 content[0].text 转出；
+ * 失败时逐字用大脑回的 message（网络级/404 用固定那句），不做自动回退到 brain_task。
  */
 
 import type { BrainClient } from "./upstream.ts";
@@ -45,6 +47,7 @@ export const BRAIN_TOOL_NAMES = [
   "brain_status",
   "brain_answer",
   "brain_cancel",
+  "brain_reply",
 ] as const;
 
 export type BrainToolName = (typeof BRAIN_TOOL_NAMES)[number];
@@ -55,7 +58,9 @@ export const BRAIN_TOOLS: ToolDefinition[] = [
     description:
       "把一件要动手的事交给大脑（dot-core）。这是机器人唯一能把活派出去的入口；" +
       "机器人自己不动手、不调用任何执行工具。参数 intent 用一句人话写清要做什么；" +
-      "declared 里写范围/验收标准等机器能读的声明。返回任务号和第一张进度卡。",
+      "declared 里写范围/验收标准等机器能读的声明。返回任务号和第一张进度卡。" +
+      "只是问一句、不需要动手（闲聊、确认、答疑）请用 brain_reply；那种话走这条路" +
+      "会占掉一个工人会话，最后以「一步都没做」失败。",
     inputSchema: {
       type: "object",
       properties: {
@@ -115,6 +120,24 @@ export const BRAIN_TOOLS: ToolDefinition[] = [
         reason: { type: "string", description: "取消原因（会写进账本）" },
       },
       required: ["task_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "brain_reply",
+    description:
+      "只回答、不派活：把用户问的一句话交给大脑，直接回一段给用户看的文本。不建任务、不写 tasks 表、不派工人；token 花费记进 spend_ledger。这是只回答的通道，不要用它派活；答不出来就说不知道，不要编。",
+    inputSchema: {
+      type: "object",
+      properties: {
+        intent: { type: "string", description: "用户问的是什么（原话优先，一句人话，≤2000 字）" },
+        context: {
+          type: "string",
+          description: "可选：回答需要的上文（相关对话/文件片段/进度卡原文，≤4000 字）；不传就只有 intent",
+        },
+        max_chars: { type: "integer", minimum: 40, maximum: 2000, description: "回答长度上限，默认 500" },
+      },
+      required: ["intent"],
       additionalProperties: false,
     },
   },
@@ -188,8 +211,14 @@ function formatFailure(err: unknown, ctx: BridgeToolContext): string {
   if (err instanceof ToolInputError) return `参数不对：${err.message}`;
   if (err instanceof BrainUnavailableError) {
     const since = ctx.downSince();
-    const prefix = since === null ? "连不上大脑" : `大脑掉线（${clockOf(since)} 时起）`;
-    return `${prefix}：${err.message}。这次没有提交、也没有记账；等大脑起来再试，或让用户看状态页 http://127.0.0.1:8799/`;
+    // 上游（bridge/upstream.ts）已经把「连不上大脑：…」写进 message，这里再加一遍就成了
+    // 「连不上大脑：连不上大脑：fetch failed」（2026-11-27 验收实测踩到）。
+    // 掉线过就用掉线时间当抬头，顺便把上游那层前缀剥掉；没掉线过才补「连不上大脑」。
+    const stripped = err.message.replace(/^连不上大脑：/, "");
+    const reason = since === null
+      ? (stripped === err.message ? `连不上大脑：${err.message}` : err.message)
+      : `大脑掉线（${clockOf(since)} 时起）：${stripped}`;
+    return `${reason}。这次没有提交、也没有记账；等大脑起来再试，或让用户看状态页 http://127.0.0.1:8799/`;
   }
   if (err instanceof BrainHttpError) {
     if (err.status === 401 || err.status === 403) {
@@ -296,6 +325,66 @@ async function runBrainCancel(args: Record<string, unknown>, ctx: BridgeToolCont
   return textResult(message, value);
 }
 
+/**
+ * brain_reply：只回答、不派活。
+ * 成功：content[0].text = 回答原文（无前缀），structuredContent {ok:true, reply}。
+ * 失败：isError=true，text 与 structuredContent.message 逐字相同：
+ *   - 大脑回了 4xx/5xx 且带 message → 逐字用该 message；
+ *   - 404 unknown_route → 固定「大脑版本不支持这条通道」；
+ *   - 连不上 → 固定「连不上大脑」；
+ * 任何路径都不去调 /tasks。
+ */
+async function runBrainReply(args: Record<string, unknown>, ctx: BridgeToolContext): Promise<ToolResult> {
+  if (!ctx.tokenConfigured) {
+    const message = "桥 token 未配置（~/.allbot/dot/bridge-token），回答不了。";
+    return textResult(message, { ok: false, error: "bridge_token_missing", status: 503, message }, true);
+  }
+  const intent = requireString(args, "intent");
+  const context = optionalString(args, "context");
+  let maxChars: number | undefined;
+  if (args.max_chars !== undefined && args.max_chars !== null) {
+    const raw = args.max_chars;
+    if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 40 || raw > 2000) {
+      throw new ToolInputError("参数 max_chars 要是 40..2000 的整数");
+    }
+    maxChars = raw;
+  }
+
+  try {
+    const { value } = await ctx.client.reply({
+      intent,
+      ...(context === undefined ? {} : { context }),
+      ...(maxChars === undefined ? {} : { max_chars: maxChars }),
+      via: "mcp",
+    });
+    const rec = asRecord(value);
+    const replyText = rec !== null && typeof rec.reply === "string" ? rec.reply : "";
+    return textResult(replyText, { ok: true, reply: replyText });
+  } catch (err) {
+    if (err instanceof BrainUnavailableError) {
+      // 上游可能已经把「连不上大脑：」写进 causeText/message，这里再包一层就会出现两次。
+      const raw = err.causeText.trim() !== "" ? err.causeText.trim() : err.message;
+      const detail = raw.replace(/^连不上大脑：/, "");
+      const message = `回答不了：连不上大脑（${detail}）。没提交，也没记账。`;
+      return textResult(message, { ok: false, error: "model_unavailable", status: 503, message }, true);
+    }
+    if (err instanceof BrainHttpError) {
+      if (err.status === 404) {
+        const message = "回答不了：大脑版本不支持这条通道（HTTP 404）。要动手请改用 brain_task。";
+        return textResult(message, { ok: false, error: "unknown_route", status: 404, message }, true);
+      }
+      const detail = err.detail.trim();
+      const message = detail === "" ? `回答不了：大脑回了 HTTP ${err.status}` : detail.startsWith("回答不了：") ? detail : `回答不了：${detail}`;
+      return textResult(
+        message,
+        { ok: false, error: err.errorCode ?? "model_failed", status: err.status, message },
+        true,
+      );
+    }
+    throw err;
+  }
+}
+
 export async function callBrainTool(
   name: string,
   rawArgs: unknown,
@@ -312,6 +401,8 @@ export async function callBrainTool(
         return await runBrainAnswer(args, ctx);
       case "brain_cancel":
         return await runBrainCancel(args, ctx);
+      case "brain_reply":
+        return await runBrainReply(args, ctx);
       default:
         return textResult(`没有这个工具：${name}`, undefined, true);
     }

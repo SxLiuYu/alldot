@@ -19,8 +19,8 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getTask, type LedgerDb, type TaskRow } from "../ledger/index.ts";
-import { beginStep, computeSubjectKey, endStep, putArtifact } from "../ledger/index.ts";
+import { createTask, getTask, listOpenApprovals, revokeApproval, setTaskState, type LedgerDb, type StepRow, type TaskRow } from "../ledger/index.ts";
+import { beginStep, computeSubjectKey, endStep, putArtifact, getArtifact, listSteps } from "../ledger/index.ts";
 import { parseContract, nextDeliverable } from "../plan/contract.ts";
 import { autoPlan } from "../plan/auto-plan.ts";
 import type { DotCoreConfig } from "../config.ts";
@@ -29,10 +29,66 @@ import { executeSkillbook, SKILLBOOK_TOOL_DEFINITION, SKILLBOOK_TOOL_NAME } from
 import { runPracticeHand, type HandDeps, type HandOutcome } from "../hands/hand.ts";
 import type { HandToolSpec } from "../hands/hand-tool.ts";
 
+/**
+ * delegate：把一块独立的活交给另一个工人（子任务）。
+ *
+ * 为什么要有：合并方案里写的是「子助手（写代码）：allbot subagent，父会话是工人」
+ * （dot-合并方案-v2-定稿.md 第 675 行）。这套安装里 allbot 的 subagent 运行时解析不到
+ * （见文件头第 1 条），所以这一层得自己给：子任务就是账本里一条 parent_id 指向父任务的
+ * 任务，跑在独立的上下文里，父工人拿到它的结论再往下走。
+ *
+ * 边界（刻意收窄，先跑通一层）：
+ * - 只到一层，子任务里没有 delegate（防止一个任务无限繁殖）；
+ * - 子任务步数上限比父任务小（DELEGATE_MAX_STEPS），花超了照样收；
+ * - 子任务的步骤记在它自己的任务号下，账本里父子关系一眼能查。
+ */
+export const DELEGATE_TOOL_NAME = "delegate";
+/** 子任务最多几步。它只该做一小块边界清楚的活。 */
+export const DELEGATE_MAX_STEPS = 15;
+export const DELEGATE_TOOL_DECL = {
+  type: "function",
+  function: {
+    name: DELEGATE_TOOL_NAME,
+    description:
+      "把一块边界清楚的活交给另一个工人（独立上下文、独立账本步骤），等它做完再给你一句话结论。" +
+      "适合「改一个文件并跑一次测试」「查清某个接口在哪定义」这种能独立验收的小块。" +
+      "brief 要写清：做什么、做完怎么算成、在哪做。子任务里不能再派子任务。",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["brief"],
+      properties: {
+        brief: { type: "string", description: "交给子任务的话：做什么、做完怎么算成（要给判据）" },
+        workspace: { type: "string", description: "子任务的工作区（相对路径或绝对路径），不填就沿用父任务的" },
+      },
+    },
+  },
+} as const;
+
 export const DEFAULT_MODEL_ENDPOINT = "http://127.0.0.1:3065/v1";
 export const DEFAULT_MODEL = "deepseek-v4.1-flash";
-/** 一个任务最多几步工具调用。到顶就收，不无限转。 */
-export const DEFAULT_MAX_STEPS = 12;
+/**
+ * 一个任务最多几步工具调用。到顶就收，不无限转。
+ * 2026-11-27 从 12 提到 40：真机账本里 4 个任务全是「到 12 步还没收工」判失败，
+ * 而它们要做的（读几个文件、改多处代码、跑一次测试）12 步必然不够。
+ * 真正防打转的是 REPEAT_LIMIT 和会话超时，不是这个粗上限。
+ */
+/**
+ * 任务档位 → 模型（2026-11-27 加）。
+ *
+ * 账本里每个任务都记着 cheap/balanced/strong，但此前代码从来不看——工人永远用
+ * DEFAULT_MODEL（deepseek-v4.1-flash），读代码、改多处这类活 30 多步全在试错。
+ *
+ * 原计划：strong 用阿里云的 qwen3-coder-plus。2026-11-27 实测该 key 返回
+ * 401 invalid_api_key（token 失效），所以暂时回落到本地池里唯一另一个模型。
+ * 阿里云 key 换新之后，把 strong 那一行改成 qwen3-coder-plus 即可。
+ */
+export const PROFILE_MODELS: Record<string, string> = {
+  cheap: DEFAULT_MODEL,
+  balanced: DEFAULT_MODEL,
+  strong: "glm-5.3-flash",
+};
+export const DEFAULT_MAX_STEPS = 40;
 /** 同一个调用重复到第几次就判定「原地打转」并停下。 */
 export const REPEAT_LIMIT = 4;
 
@@ -62,6 +118,24 @@ export interface ModelTurn {
 export interface ModelUsage {
   input_tokens: number;
   output_tokens: number;
+}
+
+/**
+ * 模型池调用失败的分类。调用方按 kind 判别，不猜字符串（D 节）。
+ * 工人侧只读 message，行为不变；只回答通道（src/reply/index.ts）按 kind 映射错误码。
+ */
+export type ModelPoolErrorKind = "config" | "unreachable" | "http" | "timeout" | "invalid";
+
+export class ModelPoolError extends Error {
+  readonly kind: ModelPoolErrorKind;
+  readonly status: number | null;
+
+  constructor(kind: ModelPoolErrorKind, message: string, status: number | null = null) {
+    super(message);
+    this.name = "ModelPoolError";
+    this.kind = kind;
+    this.status = status;
+  }
 }
 
 /** 模型调用：注入用（测试给假的），真实现在本文件底部。 */
@@ -136,6 +210,82 @@ export const RECALL_TOOL_DECL = {
   },
 } as const;
 
+/** 每一步写进提示词时最多留多少字。12 步 × 90 字，约 1 千字，够模型认路又不撑爆。 */
+const STEP_BRIEF_CHARS = 90;
+/** 只带最后这么多步。更早的看里程碑小结。 */
+const RECENT_STEPS_IN_PROMPT = 12;
+
+function readJsonArtifact(db: LedgerDb, ref: string | null): Record<string, unknown> | null {
+  if (ref === null) return null;
+  try {
+    const art = getArtifact(db, ref);
+    if (!art.found || art.content == null) return null;
+    const parsed = JSON.parse(String(art.content)) as unknown;
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function firstString(from: Record<string, unknown> | null | undefined, keys: string[]): string {
+  if (from == null) return "";
+  for (const key of keys) {
+    const value = from[key];
+    if (typeof value === "string" && value.trim() !== "") return value.trim().replace(/\s+/g, " ");
+  }
+  return "";
+}
+
+/** 一步干了什么：命令 / 路径 / 动作，失败再带上错误开头。 */
+function stepBrief(db: LedgerDb, step: StepRow): string {
+  const args = readJsonArtifact(db, step.args_ref);
+  const res = readJsonArtifact(db, step.result_ref);
+  const data = res === null ? null : (res["data"] as Record<string, unknown> | undefined) ?? null;
+  const nested = args === null ? null : (args["params"] ?? args["args"]) as Record<string, unknown> | undefined;
+  const action = firstString(args, ["action"]);
+  const subject =
+    firstString(data, ["cmd", "command"]) ||
+    firstString(nested ?? null, ["cmd", "command", "path", "query", "url", "name"]) ||
+    firstString(args, ["cmd", "command", "path"]);
+  const out = firstString(data, ["stdout"]).slice(0, STEP_BRIEF_CHARS);
+  const bits: string[] = [];
+  if (action !== "" && subject !== "") bits.push(`${action} ${subject}`);
+  else if (subject !== "") bits.push(subject);
+  else if (action !== "") bits.push(action);
+  if (out !== "") bits.push(`→ ${out}`);
+  if (step.status !== "succeeded" && step.error !== null) bits.push(`✗ ${String(step.error).slice(0, 60)}`);
+  return bits.join(" ").slice(0, STEP_BRIEF_CHARS * 2);
+}
+
+/**
+ * 前面几轮做过的事。
+ *
+ * 为什么要有：批一张请示卡、或者进程崩过一次，任务都会**新开一轮**——模型手里的对话是空的，
+ * 上一轮读过的文件、跑过的命令全忘了。2026-11-27 真机上就是这么白烧的：一个查代码的任务
+ * 54 步全在读文件，批一次测试请示卡之后从第 1 步重新摸一遍。
+ * 把最后几步的摘要喂回去，agent 才能接上，而不是重头再来。
+ */
+export function recentWorkText(db: LedgerDb, taskId: string): string {
+  let steps: StepRow[] = [];
+  try {
+    steps = listSteps(db, taskId);
+  } catch {
+    return "";
+  }
+  if (steps.length === 0) return "";
+  const tail = steps.slice(-RECENT_STEPS_IN_PROMPT);
+  const lines = [
+    `这个任务前面已经做了 ${steps.length} 步，最近 ${tail.length} 步是（已经成功过的别重做，接着往下做）：`,
+  ];
+  for (const s of tail) {
+    const brief = stepBrief(db, s);
+    lines.push(`  ${s.seq}. ${s.tool ?? s.kind} ${s.status}${brief === "" ? "" : `：${brief}`}`);
+  }
+  return lines.join("\n");
+}
+
 export function systemPrompt(db: LedgerDb, task: TaskRow, toolNames: string[]): string {
   let context = "";
   try {
@@ -154,6 +304,12 @@ export function systemPrompt(db: LedgerDb, task: TaskRow, toolNames: string[]): 
     ? "8) 这活像是别人已经总结过的做法（写文档、做图、发邮件、部署、数据分析之类）时，" +
       "先用 skillbook search 用**英文关键词**查一条，再 skillbook read 读正文照着做；" +
       "技能里的命令这台机器跑不了，只借做法。"
+    : "";
+  // 子工人（delegate）：只给父工人这一条。子工人自己的工具表里没有它，所以提示词里也不会出现。
+  const delegateHint = toolNames.includes(DELEGATE_TOOL_NAME)
+    ? "9) 有一块活边界清楚、能独立验收（例如「把某个文件改好并跑一遍它的测试」）时，用 delegate 交给子工人；" +
+      "brief 写清做什么、做完怎么算成。子工人看不到你和用户的对话，别让它猜上下文。" +
+      "子任务的结论会以一句话回到你这里，你再决定下一步。"
     : "";
   // 当前时间直接写进提示词：不然模型会为了「今天是几号」去开浏览器跑 new Date()（真机见过）。
   const nowText = new Date().toLocaleString("zh-CN", {
@@ -177,7 +333,13 @@ export function systemPrompt(db: LedgerDb, task: TaskRow, toolNames: string[]): 
         lines.push(`  约束[${c.severity}] ${c.id}：${c.description}（检查方式：${c.check}）`);
       }
       for (const d of contract.deliverables) {
-        lines.push(`  交付物 ${d.id}：${d.description}（类型：${d.type}，完成条件：${d.done_when}）`);
+        const extra =
+          d.type === "check"
+            ? `，必须用 exec 跑${d.cmd !== undefined && d.cmd !== "" ? `「${d.cmd}」` : "命令"}并且退出码 0${
+                d.match !== undefined && d.match !== "" ? `，输出要匹配 /${d.match}/` : ""
+              }`
+            : "";
+        lines.push(`  交付物 ${d.id}：${d.description}（类型：${d.type}，完成条件：${d.done_when}${extra}）`);
       }
       const next = nextDeliverable(db, task.id);
       if (next !== null) lines.push(`下一步：${next.guidance}`);
@@ -215,8 +377,10 @@ export function systemPrompt(db: LedgerDb, task: TaskRow, toolNames: string[]): 
       "只发 {\"action\":\"mkdir\"} 会被拒；被拒一次就补上 path 再调，别原样重发。",
     recallHint,
     skillHint,
+    delegateHint,
     "",
     context === "" ? "" : `当前任务上下文：\n${context}`,
+    recentWorkText(db, task.id),
     contractText,
   ]
     .filter((line) => line !== "")
@@ -232,6 +396,25 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
 } {
   const log = deps.logger ?? (() => {});
   const complete = deps.complete ?? createPoolModelComplete(deps.config, deps.model ?? DEFAULT_MODEL);
+  // 按档位挑模型：同一个模型只建一次客户端；测试注入 complete 时一律用注入的。
+  const completesByModel = new Map<string, ModelComplete>();
+  const modelFor = (profile: string | null | undefined): string => {
+    const fallback = deps.model ?? DEFAULT_MODEL;
+    if (deps.complete !== undefined) return fallback;
+    return PROFILE_MODELS[profile ?? "balanced"] ?? fallback;
+  };
+  const completeFor = (profile: string | null | undefined): ModelComplete => {
+    if (deps.complete !== undefined) return deps.complete;
+    const fallback = deps.model ?? DEFAULT_MODEL;
+    const model = modelFor(profile);
+    if (model === fallback) return complete;
+    let picked = completesByModel.get(model);
+    if (picked === undefined) {
+      picked = createPoolModelComplete(deps.config, model);
+      completesByModel.set(model, picked);
+    }
+    return picked;
+  };
   const maxSteps = deps.maxSteps ?? DEFAULT_MAX_STEPS;
   const runs = new Map<string, LocalRun>();
   let seq = 0;
@@ -271,6 +454,9 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
     ...(enableSkills ? [SKILLBOOK_TOOL_NAME] : []),
     ...extraHands.map((hand) => hand.name),
   ];
+  /** 父工人能用的工具表（比子任务多的只有 delegate）。 */
+  const parentDecls: unknown[] = [...toolDecls, DELEGATE_TOOL_DECL];
+  const parentNames: string[] = [...toolNames, DELEGATE_TOOL_NAME];
   /**
    * 「换只手也没用」的硬失败：权限不够、被拒、要人接管、任务已经不在。
    * 遇到这些就别再试别的工具了 —— 2026-11-25 真机：飞书报没权限之后，
@@ -339,6 +525,18 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
   async function executeHand(hand: HandToolSpec, taskId: string, call: ToolCallRequest): Promise<HandOutcome> {
     const args = argsOf(call);
     const nested = args["params"];
+    // 参数有两种写法，两种都认（2026-11-27 实测踩到）：
+    //   desktop/browser 的手参数 schema 里就是 `params: {...}`，模型照抄；
+    //   但模型给 exec 这种新手时会直接写顶层 `{"cmd":"node --test"}`，
+    //   而这里原来只转交 `args["params"]`，于是 req.params 是空的，
+    //   手报「exec 需要 cmd」，工人连试 8 次都一样。
+    // 口径：顶层键先铺平，嵌套 params 覆盖同名键（嵌套更具体）。
+    const flat: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(args)) {
+      // action / path / content / overwrite 已经单独转交了，别再塞进 params（会重复、也会让手看见两份）。
+      if (key === "params" || key === "action" || key === "path" || key === "content" || key === "overwrite") continue;
+      flat[key] = value;
+    }
     return await hand.run({
       toolCallId: call.id,
       taskId,
@@ -350,8 +548,8 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
       overwrite: args["overwrite"] === true,
       params:
         nested !== null && typeof nested === "object" && !Array.isArray(nested)
-          ? (nested as Record<string, unknown>)
-          : {},
+          ? { ...flat, ...(nested as Record<string, unknown>) }
+          : flat,
     });
   }
 
@@ -461,10 +659,11 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
   }
 
   /** 记一轮用量（预算八成的分子）；记不了只记日志，不影响干活。 */
-  function noteUsage(taskId: string, turn: ModelTurn): void {
+  function noteUsage(taskId: string, turn: ModelTurn, model: string): void {
     if (turn.usage === undefined || deps.onUsage === undefined) return;
     try {
-      deps.onUsage({ taskId, model: deps.model ?? DEFAULT_MODEL, usage: turn.usage });
+      // 记的是这一轮实际用的模型（按档位选过），不是缺省那一个——不然账本上的用量对不上账。
+      deps.onUsage({ taskId, model, usage: turn.usage });
     } catch (err) {
       log("warn", `用量记账失败（${taskId}）：${(err as Error).message}`);
     }
@@ -479,6 +678,9 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
     task: TaskRow,
     messages: WorkerMessage[],
     detail: string,
+    // 收尾这一问也要用这一轮档位的模型，不然「打转后自述」用的和干活不是同一个。
+    complete: ModelComplete,
+    activeModel: string,
   ): Promise<{ status: "ok" | "error"; error?: string }> {
     const ask = {
       role: "user" as const,
@@ -492,7 +694,7 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
     } catch (err) {
       return { status: "error", error: `打转后收尾没问成（${detail}）：${(err as Error).message}` };
     }
-    noteUsage(task.id, turn);
+    noteUsage(task.id, turn, activeModel);
     const text = turn.text.trim();
     log("info", `工人（${task.id}）收尾自述：${text.slice(0, 160) === "" ? "（空）" : text.slice(0, 160)}`);
     if (text === "") return { status: "error", error: `工人在原地打转，收尾也没回话：${detail}` };
@@ -503,25 +705,121 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
     return { status: "ok" };
   }
 
-  async function runLoop(task: TaskRow, extraSystemPrompt: string): Promise<{ status: "ok" | "error"; error?: string }> {
+  /**
+   * 派一个子任务，等它做完，把结论交给父工人。
+   *
+   * 子任务是账本里一条 `parent_id` 指向父任务的任务：自己的上下文、自己的步骤，
+   * 跑在同一个进程里（阻塞等待）。合并方案（定稿第 675 行）原来打算用 allbot 的 subagent，
+   * 这套安装里解析不到，所以自己给一层。
+   */
+  async function runDelegate(task: TaskRow, call: ToolCallRequest, step: number): Promise<string> {
+    const args = argsOf(call);
+    const brief = typeof args["brief"] === "string" ? args["brief"].trim() : "";
+    const refuse = (text: string): string => {
+      recordCallStep(
+        task,
+        call,
+        { ok: false, code: "bad_action", text, taskId: task.id, stepId: null, approvalId: null, tier: 1, rule: "delegate", sideEffect: "safe", resultRef: null, snapshotRef: null },
+        step,
+      );
+      return text;
+    };
+    if (brief === "") return refuse("delegate 需要 brief：写清要做什么、做完怎么算成。");
+    if (brief.length > 2000) return refuse("brief 太长了（超过 2000 字），只写这一小块要做什么、怎么算成。");
+
+    // 子任务沿用父任务的声明（工作区等），但不继承契约：契约是父任务自己的验收口径。
+    let declared: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(task.declared_json) as unknown;
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        declared = { ...(parsed as Record<string, unknown>) };
+      }
+    } catch {
+      declared = {};
+    }
+    delete declared["contract"];
+    const ws = typeof args["workspace"] === "string" ? args["workspace"].trim() : "";
+    if (ws !== "") declared["workspace"] = ws;
+
+    const child = createTask(deps.db, { parent_id: task.id, intent: brief, declared, source: "delegate" });
+    log("info", `工人（${task.id}）第 ${step} 步派了子任务 ${child.id}：${brief.slice(0, 80)}`);
+    const started = Date.now();
+    const outcome = await runLoop(
+      child,
+      "你是被父任务派来做一块独立活的子工人。做完用一句话给结论：做成了什么、放在哪里、怎么验的。" +
+        "子任务里没有人守着，不能要求人批：遇到需要批准的动作就停下来说明，别硬试。",
+      { isSub: true, maxSteps: DELEGATE_MAX_STEPS },
+    );
+    const minutes = ((Date.now() - started) / 60000).toFixed(1);
+    // 子任务没人守着：它在这期间要出来的请示卡（第 4 档命令之类）一律撤回，
+    // 否则这些卡会留在审批列表里等人点，点了也没人接着执行（子任务已经收尾了）。
+    try {
+      for (const apv of listOpenApprovals(deps.db, child.id)) {
+        if (revokeApproval(deps.db, apv.id, "子任务没人守着，卡已撤回")) {
+          log("info", `子任务 ${child.id} 的请示卡 ${apv.id} 已撤回（子任务没人守着）`);
+        }
+      }
+    } catch (err) {
+      log("warn", `清理子任务 ${child.id} 的请示卡失败：${(err as Error).message}`);
+    }
+    const done = outcome.status === "ok";
+    try {
+      setTaskState(deps.db, child.id, done ? "done" : "failed", {
+        reason: done ? `子任务做完（父任务 ${task.id} 派的）` : `子任务失败：${outcome.error ?? "没有结论"}`,
+        blocked_on: null,
+        // 子任务可能停在 awaiting_approval（第 4 档命令出过卡）：卡片上面已经撤回，
+        // 这里要能把它收掉，否则它会一直挂在「等人批」。
+        expect: ["queued", "running", "awaiting_approval", "paused"],
+      });
+    } catch (err) {
+      log("warn", `子任务 ${child.id} 收尾失败：${(err as Error).message}`);
+    }
+    const text = done
+      ? `子任务 ${child.id} 做完了（${minutes} 分钟）。它的结论：\n${outcome.text !== undefined && outcome.text !== "" ? outcome.text : "（它没写结论）"}`
+      : `子任务 ${child.id} 没做成（${minutes} 分钟）：${outcome.error ?? "没有结论"}`;
+    recordCallStep(
+      task,
+      call,
+      { ok: done, code: done ? "ok" : "failed", text, taskId: task.id, stepId: null, approvalId: null, tier: 1, rule: "delegate", sideEffect: "safe", resultRef: null, snapshotRef: null },
+      step,
+    );
+    return text;
+  }
+
+  /**
+   * 跑一条任务的工人循环。
+   * `sub` 表示这次是「被父任务派出来的子工人」：工具表里没有 delegate（只到一层）、
+   * 步数上限更小、结论要回给父任务。
+   */
+  async function runLoop(
+    task: TaskRow,
+    extraSystemPrompt: string,
+    sub: { isSub: boolean; maxSteps?: number } = { isSub: false },
+  ): Promise<{ status: "ok" | "error"; error?: string; text?: string }> {
+    // 这一轮用的模型跟着任务档位走（外层 complete 只是缺省）。
+    const complete = completeFor(task.profile);
+    const activeModel = modelFor(task.profile);
     // 同一个调用（工具名+参数）在**本次 run 里**出现几次；用来识破模型原地打转。
     // 按 run 建，不跨任务：见上面「两张表不能提到实例上」的注释。
     const seenCalls = new Map<string, number>();
     /** 每个调用上一次的正文；重复时原样再喂一遍（同一任务自己的上一次）。 */
     const lastResults = new Map<string, string>();
+    const decls = sub.isSub ? toolDecls : parentDecls;
+    const names = sub.isSub ? toolNames : parentNames;
+    const budget = sub.maxSteps ?? maxSteps;
     const messages: WorkerMessage[] = [
       {
         role: "system",
-        content: `${systemPrompt(deps.db, task, toolNames)}${extraSystemPrompt === "" ? "" : `\n\n${extraSystemPrompt}`}`,
+        content: `${systemPrompt(deps.db, task, names)}${extraSystemPrompt === "" ? "" : `\n\n${extraSystemPrompt}`}`,
       },
       { role: "user", content: task.intent },
     ];
-    for (let step = 1; step <= maxSteps; step += 1) {
+    for (let step = 1; step <= budget; step += 1) {
       // 长程任务检查点：每步保存进度，超时后可断点续跑
       try {
         const { getLongTaskManager } = await import("../longtask/index.ts");
         getLongTaskManager().checkpoint(task.id, {
-          stage: `执行第 ${step}/${maxSteps} 步`,
+          stage: `执行第 ${step}/${budget} 步`,
           completedSteps: Array.from({ length: step - 1 }, (_, i) => i + 1),
           spentTokens: 0,
           status: "running",
@@ -529,11 +827,11 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
       } catch { /* 检查点模块不可用不影响 */ }
       let turn: ModelTurn;
       try {
-        turn = await complete({ messages, tools: toolDecls });
+        turn = await complete({ messages, tools: decls });
       } catch (err) {
         return { status: "error", error: `模型调用失败：${(err as Error).message}` };
       }
-      noteUsage(task.id, turn);
+      noteUsage(task.id, turn, activeModel);
       if (turn.toolCalls.length > 0) {
         // 每轮把「要了哪些工具」原样打出来。2026-11-25 两次复测里，账本上是 no_steps、
         // 日志里只有一句「第 N 步没有要工具」，中间四轮要了什么完全看不到——
@@ -559,7 +857,7 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
       }
       if (turn.toolCalls.length === 0) {
         log("info", `工人（${task.id}）第 ${step} 步没有要工具，收工：${turn.text.slice(0, 120)}`);
-        return { status: "ok" };
+        return { status: "ok", text: turn.text };
       }
       // 同一个调用重复出现 = 模型在原地打转（真机见过：连着十几次 list 同一个目录，
       // 每次都说「接下来建目录」，然后又说同样的话）。
@@ -569,6 +867,13 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
         const hand = handByName.get(call.name);
         const isRecall = enableRecall && call.name === RECALL_TOOL_NAME;
         const isSkillbook = enableSkills && call.name === SKILLBOOK_TOOL_NAME;
+        // delegate：父工人把一块活交给子工人（子任务、独立上下文）。子工人没有这个工具。
+        if (call.name === DELEGATE_TOOL_NAME && !sub.isSub) {
+          const text = await runDelegate(task, call, step);
+          lastResults.set(`${call.name}|${call.arguments}`, text);
+          messages.push({ role: "tool", tool_call_id: call.id, content: text });
+          continue;
+        }
         if (call.name !== "practice" && !isRecall && !isSkillbook && hand === undefined) {
           // 这一支必须留一行日志：它既不落步骤也不报错，2026-11-25 真机上「6 步全要了不存在的工具」
           // 在账本里长得和「一步都没做」一模一样，查了两轮才定位。
@@ -591,7 +896,7 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
             role: "tool",
             tool_call_id: call.id,
             content:
-              `没有这个工具：${call.name}。可用的只有 ${toolNames.join(" / ")}。` +
+              `没有这个工具：${call.name}。可用的只有 ${names.join(" / ")}。` +
               // 真机上模型会照着 MCP 的叫法瞎猜（browser_navigate 之类），连错几步就放弃。
               // 这里直接把它拽回正确名字，比让它自己猜有用。
               "别猜别的名字：打网页用 clean_browser 或 logged_browser，点桌面程序用 desktop，写文件用 files，" +
@@ -612,7 +917,7 @@ export function createLocalWorkerRuntime(deps: LocalWorkerDeps): {
           log("warn", `工人（${task.id}）打转，问一次收尾：${detail}`);
           // 打转不等于没做成：真机上常见「mkdir 成功 → list 成功 → 又要 mkdir」。
           // 所以掐断工具，只让模型用一句话交代「做成了什么、还差什么」，按它自己的话判成败。
-          return await wrapUp(task, messages, detail);
+          return await wrapUp(task, messages, detail, complete, activeModel);
         }
         if (repeat >= 2) {
           const before = lastResults.get(digest) ?? "（上一步没有正文）";
@@ -830,15 +1135,23 @@ export function createPoolModelComplete(
   config?: DotCoreConfig,
   model = DEFAULT_MODEL,
   endpoint: () => { baseUrl: string; apiKey: string } = readPoolEndpoint,
-  opts: { maxTokens?: number } = {},
+  opts: { maxTokens?: number; timeoutMs?: number } = {},
 ): ModelComplete {
   void config;
   // 1200 是工人干活时的默认（工具调用短）。**要长正文的调用**（自我优化提案那种
   // 「必须吐一段完整 JSON」）得把这个抬高：模型先花 token 想，再输出正文，
   // 预算全花在思考上时 content 就是空串（2026-11-25 真机：提案连续两次「模型回了空文本」）。
   const maxTokens = opts.maxTokens ?? 1200;
+  // 默认 120000 不变（工人并发挂起那条真机结论）。只回答通道自己传 55000。
+  const timeoutMs = opts.timeoutMs ?? 120000;
   return async ({ messages, tools }) => {
-    const { baseUrl, apiKey } = endpoint();
+    let baseUrl: string;
+    let apiKey: string;
+    try {
+      ({ baseUrl, apiKey } = endpoint());
+    } catch (err) {
+      throw new ModelPoolError("config", (err as Error).message);
+    }
     const body = {
       model,
       messages: messages.map((m) => ({
@@ -852,22 +1165,30 @@ export function createPoolModelComplete(
       max_tokens: maxTokens,
     };
     const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 120000);
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
     // 超时必须覆盖到读完正文为止：以前 clearTimeout 放在 fetch 后面的 finally 里，
     // fetch 一收到响应头就清了定时器，resp.json() 读正文没有超时保护。
     // 2026-11-26 真机：6 个工人并发时模型池回了头但正文不来，3 个工人永远挂在
     // resp.json() 上，600 秒会话超时也救不了（它只管 waitForRun 那层）。
     try {
-      const resp = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        signal: ac.signal,
-        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify(body),
-      });
-      if (!resp.ok) {
-        throw new Error(`模型池回了 ${resp.status}：${(await resp.text()).slice(0, 200)}`);
+      let resp: Response;
+      try {
+        resp = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          signal: ac.signal,
+          headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify(body),
+        });
+      } catch (err) {
+        const e = err as Error;
+        const timedOut = e.name === "TimeoutError" || e.name === "AbortError";
+        throw new ModelPoolError(timedOut ? "timeout" : "unreachable", e.message);
       }
-      const json = (await resp.json()) as {
+      if (!resp.ok) {
+        const detail = (await resp.text()).slice(0, 200);
+        throw new ModelPoolError("http", `模型池回了 ${resp.status}：${detail}`, resp.status);
+      }
+      let json: {
         choices?: Array<{
           message?: {
             content?: string | null;
@@ -881,6 +1202,13 @@ export function createPoolModelComplete(
           output_tokens?: number;
         };
       };
+      try {
+        json = (await resp.json()) as typeof json;
+      } catch (err) {
+        const e = err as Error;
+        const timedOut = e.name === "TimeoutError" || e.name === "AbortError";
+        throw new ModelPoolError(timedOut ? "timeout" : "invalid", e.message);
+      }
       const msg = json.choices?.[0]?.message;
       const calls: ToolCallRequest[] = [];
       for (const [idx, call] of (msg?.tool_calls ?? []).entries()) {

@@ -86,6 +86,10 @@ test("proactive：文件变化触发", async () => {
   try {
     const testFile = join(f.dir, "watch.txt");
     writeFileSync(testFile, "initial");
+    // mtime 固定到 1 分钟前：否则「写文件」和「第一次 tick」常落在同一毫秒，
+    // 第二次 tick 的 mtime > lastFired 就可能成立，全量跑时偶发红（2026-11-27 见两次）。
+    const oneMinuteAgo = new Date(Date.now() - 60_000);
+    utimesSync(testFile, oneMinuteAgo, oneMinuteAgo);
 
     f.monitor.add({
       name: "watch-file",
@@ -104,8 +108,11 @@ test("proactive：文件变化触发", async () => {
     await f.monitor.tick();
     assert.equal(f.fired.length, 1);
 
-    // 更新文件 mtime，应该触发
-    utimesSync(testFile, new Date(), new Date());
+    // 更新文件 mtime，应该触发。
+    // 必须比 lastFired 明确更晚：实现是 mtimeMs > lastFired，而 new Date() 与
+    // 上一次 tick 常落在同一毫秒，mtimeMs 相等就不触发（全量跑时偶发红）。
+    const later = new Date(Date.now() + 2000);
+    utimesSync(testFile, later, later);
     await f.monitor.tick();
     assert.equal(f.fired.length, 2);
   } finally {

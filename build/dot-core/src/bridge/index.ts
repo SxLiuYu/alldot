@@ -134,3 +134,36 @@ export {
   type BridgeRouteDeps,
   type BridgeRouteHandler,
 } from "./routes.ts";
+
+export {
+  buildDoctor,
+  DOCTOR_ROW_RULES,
+  type DoctorPayload,
+  type DoctorItem,
+  type DoctorState,
+  type DoctorConfigError,
+} from "./doctor.ts";
+
+export { buildDiagnostics, redactDiagnostics, type DiagnosticsInput } from "./diagnostics.ts";
+
+export {
+  listApprovals,
+  answerApproval,
+  approvalExpiresAt,
+  approvalSummaryText,
+  toApprovalItem,
+  type ApprovalItem,
+  type AnswerResult,
+  type ListApprovalsResult,
+} from "./approvals.ts";
+
+export {
+  runFixAction,
+  isFixAction,
+  createFixEnvironment,
+  defaultTcpProbe,
+  defaultHttpProbe,
+  type FixAction,
+  type FixEnvironment,
+  type FixOutcome,
+} from "./fix.ts";

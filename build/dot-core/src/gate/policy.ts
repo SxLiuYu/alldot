@@ -26,6 +26,17 @@ export const DEFAULT_EXEC_WHITELIST: readonly string[] = Object.freeze([
   "rg",
   "ls",
   "cat",
+  // 2026-11-26：只读查看类程序，补进白名单后 judgeTier 会走 exec_readonly 一档放行。
+  // 这几个名字已在 exec.ts 的 READONLY_PROGRAMS 里，参数里出现执行性语法仍会被判 4 档。
+  // 刻意不加 find：find 自带 -delete / -exec 会写文件，和「只读白名单」的口径冲突。
+  "head",
+  "tail",
+  "pwd",
+  "echo",
+  "grep",
+  // 2026-11-27：真机上工人想数 routes.ts 有多少行，`wc` 被白名单拦了，只好改用 tail 一段段啃。
+  // gate/exec.ts 的只读集合里本来就有 wc（判 1 档），白名单漏了它而已。
+  "wc",
 ]);
 
 /**

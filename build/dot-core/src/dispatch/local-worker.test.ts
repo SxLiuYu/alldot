@@ -103,7 +103,8 @@ test("本机工人：模型要 write → 文件真写进练习文件夹，账本
     // 第一次调用带了工具声明，第二次是「拿到工具结果之后」的续问。
     assert.equal(seen.length, 2);
     assert.equal(Array.isArray(seen[0]?.tools), true);
-    assert.equal((seen[0]?.tools as unknown[]).length, 1);
+    // practice + delegate（delegate 是父工人才能用的：把一块活交给子工人）
+    assert.equal((seen[0]?.tools as unknown[]).length, 2);
     assert.ok((seen[1]?.messages ?? 0) > (seen[0]?.messages ?? 0), "工具结果要喂回模型");
   } finally {
     f.cleanup();
@@ -270,13 +271,60 @@ test("本机工人：额外的手（desktop 等）会被列进工具表，并按
     const tools = seen[0]?.tools as Array<{ function: { name: string } }>;
     assert.deepEqual(
       tools.map((t) => t.function.name),
-      ["practice", "desktop"],
-      "工具表要有练习手 + 额外的手",
+      ["practice", "desktop", "delegate"],
+      "工具表要有练习手 + 额外的手 + delegate（父工人才能派子任务）",
     );
     assert.equal(seenCalls.length, 1);
     assert.equal(seenCalls[0]?.action, "status");
     assert.equal(seenCalls[0]?.taskId, taskId, "taskId 由工人显式给，不靠模型传");
     assert.deepEqual(seenCalls[0]?.params, { x: 1 }, "params 原样交给那只手");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("本机工人：顶层参数也交给手（模型不给 params 嵌套时不能丢）", async () => {
+  const f = fixture();
+  try {
+    const taskId = createTask(f.db.db, { intent: "跑测试", state: "running" });
+    let seenParams: Record<string, unknown> | null = null;
+    const fakeHand = {
+      name: "exec",
+      description: "命令手",
+      parameters: { type: "object", properties: { cmd: { type: "string" } } },
+      async run(req: never) {
+        const r = req as unknown as { params: Record<string, unknown> };
+        seenParams = r.params;
+        return {
+          ok: true,
+          code: "ok",
+          text: "跑完了",
+          taskId,
+          stepId: null,
+          approvalId: null,
+          tier: 1,
+          rule: "test.exec",
+          sideEffect: "safe",
+          resultRef: null,
+        } as never;
+      },
+    };
+    const { complete } = scripted([
+      { text: "", toolCalls: [{ id: "c1", name: "exec", arguments: JSON.stringify({ cmd: "node --test" }) }] },
+      { text: "跑完了", toolCalls: [] },
+    ]);
+    const rt = createLocalWorkerRuntime({
+      db: f.db.db,
+      config: f.config,
+      complete,
+      handDeps: { judge: ALLOW_JUDGE },
+      extraHands: [fakeHand as never],
+      maxSteps: 3,
+    });
+    const { runId } = await rt.run({ sessionKey: `task:${taskId}`, message: "跑测试" });
+    const result = await rt.waitForRun({ runId, timeoutMs: 5000 });
+    assert.equal(result.status, "ok");
+    assert.deepEqual(seenParams, { cmd: "node --test" }, "顶层 cmd 必须原样到手上，不能变成空对象");
   } finally {
     f.cleanup();
   }
@@ -640,6 +688,126 @@ test("本机工人：额外的手必须收到 path / content / overwrite（真�
     assert.equal(seen[0]?.action, "mkdir");
     assert.equal(seen[0]?.path, "dot-验收文件夹", "path 必须转交给手，不能在半路丢掉");
     assert.equal(seen[0]?.overwrite, true);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("系统提示词带上前几轮做过的事（批卡/崩过之后别重头再查一遍）", async () => {
+  const f = fixture();
+  try {
+    const taskId = createTask(f.db.db, { intent: "查一下桥的路由文件" });
+    const { getTask, beginStep, endStep, putArtifact } = await import("../ledger/index.ts");
+    // 造两步已经跑过的执行：一步成功（带 cmd 和输出），一步被闸门拒了。
+    const ok = beginStep(f.db.db, { task_id: taskId, run_epoch: 0, kind: "tool", tool: "exec", subject_key: "k1", side_effect: "safe", tier: 1 });
+    const okRes = putArtifact(f.db.db, JSON.stringify({ ok: true, action: "run", data: { cmd: "ls build/dot-core/src/bridge", cwd: ".", exit_code: 0, stdout: "routes.ts access.ts" } }));
+    endStep(f.db.db, ok.id, { status: "succeeded", result_ref: okRes.hash });
+    const bad = beginStep(f.db.db, { task_id: taskId, run_epoch: 0, kind: "tool", tool: "exec", subject_key: "k2", side_effect: "safe", tier: 1 });
+    endStep(f.db.db, bad.id, { status: "skipped", error: "bad_action: 「wc」不在允许的命令名单里" });
+
+    const task = getTask(f.db.db, taskId);
+    assert.ok(task);
+    const { systemPrompt } = await import("./local-worker.ts");
+    const text = systemPrompt(f.db.db, task, ["practice", "exec"]);
+    assert.match(text, /前面已经做了 2 步/, "要说清前面做过几步");
+    assert.match(text, /ls build\/dot-core\/src\/bridge/, "成功的命令要带回来，省得再查一遍");
+    assert.match(text, /routes\.ts access\.ts/, "输出开头也要带上");
+    assert.match(text, /wc/, "被拒过的那条也要带上，别原样重试");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("delegate：父工人派子任务，子任务独立跑完并把结论带回来", async () => {
+  const f = fixture();
+  try {
+    // 父任务：有意图、没有工作区（子任务沿用即可）
+    const parentId = createTask(f.db.db, { intent: "把结论写进练习夹，再汇报" });
+    const handCalls: Array<{ action: string; path?: string }> = [];
+    const fakeFiles = {
+      name: "files",
+      description: "工作区文件",
+      parameters: { type: "object", required: ["action"], properties: { action: { type: "string" }, path: { type: "string" } } },
+      async run(req: { action?: string; path?: string }) {
+        handCalls.push({ action: String(req.action ?? ""), path: req.path });
+        return {
+          ok: true, code: "ok" as const, text: `写入完成：${req.path ?? ""}`, taskId: parentId,
+          stepId: null, approvalId: null, tier: 2, rule: "test.allow", sideEffect: "replayable" as const,
+          resultRef: null, snapshotRef: null,
+        } as never;
+      },
+    };
+    const { complete, seen } = scripted([
+      // 1) 父工人：派子任务
+      { text: "", toolCalls: [{ id: "p1", name: "delegate", arguments: JSON.stringify({ brief: "把结论写进 out.txt，写完说一声" }) }] },
+      // 2) 子工人：调一次手
+      { text: "", toolCalls: [{ id: "c1", name: "files", arguments: JSON.stringify({ action: "write", path: "out.txt" }) }] },
+      // 3) 子工人：收工并给结论
+      { text: "写好了：out.txt，内容是结论", toolCalls: [] },
+      // 4) 父工人：拿到结论后收工
+      { text: "子任务写完了，我也收工", toolCalls: [] },
+    ]);
+    const rt = createLocalWorkerRuntime({
+      db: f.db.db,
+      config: f.config,
+      complete,
+      handDeps: { judge: ALLOW_JUDGE },
+      extraHands: [fakeFiles as never],
+      maxSteps: 6,
+    });
+
+    const { runId } = await rt.run({ sessionKey: `task:${parentId}`, message: "派活" });
+    const result = await rt.waitForRun({ runId, timeoutMs: 5000 });
+    assert.equal(result.status, "ok", String(result.error ?? ""));
+
+    // 子任务真的建出来了：父子关系落在账本里，状态是 done
+    const children = f.db.db.prepare("SELECT id, state, intent, parent_id FROM tasks WHERE parent_id = ?").all(parentId) as Array<{
+      id: string; state: string; intent: string; parent_id: string;
+    }>;
+    assert.equal(children.length, 1, "应该正好派了一个子任务");
+    assert.equal(children[0]?.state, "done");
+    assert.match(String(children[0]?.intent), /out\.txt/);
+    assert.equal(children[0]?.parent_id, parentId);
+
+    // 子任务的步骤记在它自己名下，不混进父任务
+    assert.equal(listSteps(f.db.db, children[0]!.id).length, 1, "子工人那一步记在子任务上");
+    assert.equal(handCalls.length, 1, "子工人真的调了手");
+    assert.equal(handCalls[0]?.path, "out.txt");
+
+    // 父任务那边有一条 delegate 步骤（审计能看见派了谁）
+    const parentSteps = listSteps(f.db.db, parentId);
+    assert.equal(parentSteps.length, 1);
+    assert.equal(parentSteps[0]?.tool, "delegate");
+
+    // 父工人拿到了子任务的结论（喂回模型的正文里有）
+    assert.ok(seen.length >= 4, `父+子一共至少要问 4 次模型，实际 ${seen.length}`);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("delegate：子工人手里没有 delegate（只到一层）", async () => {
+  const f = fixture();
+  try {
+    const parentId = createTask(f.db.db, { intent: "派活" });
+    const { complete, seen } = scripted([
+      { text: "", toolCalls: [{ id: "p1", name: "delegate", arguments: JSON.stringify({ brief: "再派一个" }) }] },
+      // 子工人想再派：工具表里没有 delegate，只能收工
+      { text: "我不能再派子任务，收工", toolCalls: [] },
+      { text: "好", toolCalls: [] },
+    ]);
+    const rt = createLocalWorkerRuntime({
+      db: f.db.db,
+      config: f.config,
+      complete,
+      handDeps: { judge: ALLOW_JUDGE },
+      extraHands: [],
+      maxSteps: 4,
+    });
+    const { runId } = await rt.run({ sessionKey: `task:${parentId}`, message: "派活" });
+    await rt.waitForRun({ runId, timeoutMs: 5000 });
+    const childNames = (seen[1]?.tools as Array<{ function: { name: string } }> | undefined)?.map((t) => t.function.name) ?? [];
+    assert.deepEqual(childNames, ["practice"], "子工人的工具表里不该有 delegate");
   } finally {
     f.cleanup();
   }

@@ -327,6 +327,26 @@ export function createBrowserHand(
       };
     },
 
+    /**
+     * 2026-11-27：navigate 之前先看协议。此前模型想读本地文件会调 browser_navigate 打开
+     * `file://...` / 盘符路径，MCP 报错又被算成写类失败（致命），一个用错的手把整个任务判死
+     * （waihu 任务 task_2197… 实测两次，34 步跑完仍 failed）。
+     * 这里直接拒，并且不记账——和 bad_action 同口径，模型能换个手重试。
+     */
+    validate(action, req) {
+      if (action !== "navigate") return null;
+      const raw = asRecord(req.params)["url"];
+      if (typeof raw !== "string" || raw.trim() === "") return null;
+      const url = raw.trim();
+      if (/^https?:\/\//i.test(url)) return null;
+      return {
+        code: "bad_action",
+        text:
+          `浏览器的 navigate 只开 http(s) 网址，打不开「${url.slice(0, 80)}」。` +
+          "本地文件用 files 手的 read（工作区相对路径）或 glob/grep 找，不要用浏览器打开 file:// 或盘符路径。",
+      };
+    },
+
     subjectParams(action, req, ctx) {
       // 验证码交接之后，同一条提交要重新出一张卡（「提交前若人工接过手再问一次」）：
       // 把交接轮次放进主题键，旧卡不会自动复用到新的一轮。

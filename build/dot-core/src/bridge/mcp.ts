@@ -93,7 +93,7 @@ export async function handleMcpMessage(message: unknown, ctx: McpContext): Promi
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: ctx.serverName ?? "dot-bridge", version: ctx.version },
         instructions:
-          "dot 的大脑接口。机器人只有这四个工具：brain_task 派活、brain_status 问进度、brain_answer 回传审批、brain_cancel 取消。机器人自己不动手。",
+          "dot 的大脑接口。机器人只有这五个工具：brain_reply 只回答（直接回一段给用户看的话，不建任务、不派活）、brain_task 派活、brain_status 问进度、brain_answer 回传审批、brain_cancel 取消。想动手才用 brain_task；只想聊一句就用 brain_reply。机器人自己不动手。",
       });
 
     case "ping":

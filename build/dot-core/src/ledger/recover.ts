@@ -167,11 +167,20 @@ function ensureUnknownApproval(
   return String(approval.id);
 }
 
+/**
+ * 只给**正在跑**的任务 bump epoch。
+ *
+ * 2026-11-27 实测：原来对 queued / running / awaiting_approval / paused 一律 +1。
+ * 恢复协议在插件加载时跑一次、gateway_start 钩子再跑一次，两次都把队列里的活任务 +1；
+ * 一条任务从创建到收尾 epoch 能到 3，账本上出现一串「崩溃恢复：同一步之前已经成功过」。
+ * 产物没错，但白烧 token。epoch 的语义是「这一轮谁在动手」——只有 running 的旧会话断了
+ * 才需要作废它；排队中的还没开工，等人批的和暂停的本来就没有活跃会话。
+ */
 function bumpEpoch(db: LedgerDb, at: Date): Array<{ taskId: string; from: number; to: number }> {
   const rows = db
     .prepare(
       `SELECT id, run_epoch FROM tasks
-       WHERE state IN ('queued','running','awaiting_approval','paused')
+       WHERE state = 'running'
        ORDER BY created_at ASC, id ASC`,
     )
     .all() as Array<{ id?: string; run_epoch?: number }>;

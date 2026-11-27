@@ -9,6 +9,7 @@
  * 5. 先来先做（created_at 升序）；
  * 6. 开关：dispatch.enabled=false 一个都不领、一次都不调 runtime；
  * 7. 闸门：工人会话里的动作真被拦下（建审批、任务转 awaiting_approval），派发器不自己批、也不把任务标 done；
+ *    （唯一例外：到期的审批单由派发器收口，见 scheduler.sweepExpiredApprovals）；
  * 8. 超时之后有人接管（有界重排一次）、审批有结论后任务回队列、拒绝终止；
  * 9. 完整性校验每轮都跑（不缓存）。
  */
@@ -457,6 +458,150 @@ test("settle：有失败步 → failed 并写 state_reason", () => {
   }
 });
 
+test("settle：只读探测失败不算致命，写成功仍 done 并留痕", () => {
+  const t = makeTempDb();
+  try {
+    migrate(t.db);
+    const taskId = createTask(t.db, { intent: "列父目录失败但文件写成了" });
+    setTaskState(t.db, taskId, "running", { expect: ["queued"] });
+    succeededStep(t.db, taskId, 0, 1);
+    const probe = beginStep(t.db, {
+      task_id: taskId,
+      run_epoch: 0,
+      kind: "tool",
+      tool: "files",
+      subject_key: "k_probe",
+      side_effect: "safe",
+    });
+    endStep(t.db, probe.id, { status: "failed", error: "bad_path: 父目录在工作区外" });
+    succeededStep(t.db, taskId, 0, 2);
+
+    const report = settleTask(t.db, taskId);
+    assert.equal(report.outcome, "done");
+    const reason = getTask(t.db, taskId)?.state_reason ?? "";
+    assert.match(reason, /只读探测失败/);
+    assert.match(reason, /1 步/);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("settle：写类动作「还没动手就拒了」不算致命（exists 重试不该判死）", () => {
+  const t = makeTempDb();
+  try {
+    migrate(t.db);
+    const taskId = createTask(t.db, { intent: "写 recheck.txt" });
+    setTaskState(t.db, taskId, "running", { expect: ["queued"] });
+    succeededStep(t.db, taskId, 0, 1);
+    // 第 3 步真写了（成功，replayable）
+    const wrote = beginStep(t.db, {
+      task_id: taskId,
+      run_epoch: 0,
+      kind: "tool",
+      tool: "files",
+      subject_key: "k_write",
+      side_effect: "replayable",
+    });
+    endStep(t.db, wrote.id, { status: "succeeded" });
+    // 第 4 步又写一次，被「已存在」拒：磁盘一个字节没变
+    const retry = beginStep(t.db, {
+      task_id: taskId,
+      run_epoch: 0,
+      kind: "tool",
+      tool: "files",
+      subject_key: "k_write_again",
+      side_effect: "replayable",
+    });
+    endStep(t.db, retry.id, { status: "failed", error: "exists: 文件已存在（recheck.txt）：要覆盖请显式传 overwrite=true" });
+
+    const report = settleTask(t.db, taskId);
+    assert.equal(report.outcome, "done", "重试被拒不该把整条任务判成 failed");
+    const reason = getTask(t.db, taskId)?.state_reason ?? "";
+    assert.match(reason, /只读探测失败/);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("settle：真的写失败（write_failed）照样致命", () => {
+  const t = makeTempDb();
+  try {
+    migrate(t.db);
+    const taskId = createTask(t.db, { intent: "写文件时盘满了" });
+    setTaskState(t.db, taskId, "running", { expect: ["queued"] });
+    succeededStep(t.db, taskId, 0, 1);
+    const boom = beginStep(t.db, {
+      task_id: taskId,
+      run_epoch: 0,
+      kind: "tool",
+      tool: "files",
+      subject_key: "k_write_fail",
+      side_effect: "replayable",
+    });
+    endStep(t.db, boom.id, { status: "failed", error: "write_failed: ENOSPC" });
+
+    const report = settleTask(t.db, taskId);
+    assert.equal(report.outcome, "failed");
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("settle：interrupted 即使 side_effect=safe 也致命", () => {
+  const t = makeTempDb();
+  try {
+    migrate(t.db);
+    const taskId = createTask(t.db, { intent: "会话中断" });
+    setTaskState(t.db, taskId, "running", { expect: ["queued"] });
+    succeededStep(t.db, taskId, 0, 1);
+    const bad = beginStep(t.db, {
+      task_id: taskId,
+      run_epoch: 0,
+      kind: "tool",
+      tool: "files",
+      subject_key: "k_interrupted",
+      side_effect: "safe",
+    });
+    endStep(t.db, bad.id, { status: "interrupted", error: "会话崩了" });
+
+    const report = settleTask(t.db, taskId);
+    assert.equal(report.outcome, "failed");
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("settle：有契约但交付物没交 → paused，不判 done", () => {
+  const t = makeTempDb();
+  try {
+    migrate(t.db);
+    const taskId = createTask(t.db, { intent: "把结论写进 docs/x.md" });
+    const declared = {
+      workspace: "D:/tmp/x",
+      contract: {
+        version: 1,
+        goal: "写文档",
+        constraints: [],
+        deliverables: [
+          { id: "doc", description: "结论文档", type: "file", path: "docs/x.md", done_when: "文件存在" },
+        ],
+      },
+    };
+    t.db.prepare("UPDATE tasks SET declared_json = ? WHERE id = ?").run(JSON.stringify(declared), taskId);
+    setTaskState(t.db, taskId, "running", { expect: ["queued"] });
+    // 只有读类步骤：真机上次就是这样——读了 20 个文件、一个字没写，却判了完成。
+    succeededStep(t.db, taskId, 0, 1);
+
+    const report = settleTask(t.db, taskId);
+    assert.equal(report.outcome, "paused");
+    const reason = getTask(t.db, taskId)?.state_reason ?? "";
+    assert.match(reason, /契约没完成/);
+    assert.match(reason, /doc/);
+  } finally {
+    t.cleanup();
+  }
+});
+
 test("settle：一步都没做 → failed（零步骤不算成功）", () => {
   const t = makeTempDb();
   try {
@@ -467,6 +612,46 @@ test("settle：一步都没做 → failed（零步骤不算成功）", () => {
     const report = settleTask(t.db, taskId);
     assert.equal(report.outcome, "failed");
     assert.ok((getTask(t.db, taskId)?.state_reason ?? "").includes("no_steps"));
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("settle：全部步骤都被拒（一个都没成功）→ failed，不判完成", () => {
+  const t = makeTempDb();
+  try {
+    migrate(t.db);
+    const taskId = createTask(t.db, { intent: "把结论写进 result.txt" });
+    setTaskState(t.db, taskId, "running", { expect: ["queued"] });
+    // 写类动作在动手之前就被拦下：账上记 skipped + denied（手拦的不是失败）
+    const denied = beginStep(t.db, {
+      task_id: taskId, run_epoch: 0, kind: "tool", tool: "files", subject_key: "k1", side_effect: "replayable",
+    });
+    endStep(t.db, denied.id, { status: "skipped", error: "denied: 这张请示卡被拒了" });
+
+    const report = settleTask(t.db, taskId);
+    // 修复前：skipped 不算致命 → 一路走到 done（「写类步骤都成功或跳过」），什么也没写出来
+    assert.equal(report.outcome, "failed");
+    assert.match(getTask(t.db, taskId)?.state_reason ?? "", /一步都没成功/);
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("settle：一步成功 + 一步被拒 → 仍判 done（被拒的那步不留死账）", () => {
+  const t = makeTempDb();
+  try {
+    migrate(t.db);
+    const taskId = createTask(t.db, { intent: "写 result.txt，顺手清理" });
+    setTaskState(t.db, taskId, "running", { expect: ["queued"] });
+    succeededStep(t.db, taskId, 0, 1);
+    const denied = beginStep(t.db, {
+      task_id: taskId, run_epoch: 0, kind: "tool", tool: "files", subject_key: "k2", side_effect: "replayable",
+    });
+    endStep(t.db, denied.id, { status: "skipped", error: "denied: 用户拒绝了这一步" });
+
+    const report = settleTask(t.db, taskId);
+    assert.equal(report.outcome, "done");
   } finally {
     t.cleanup();
   }
@@ -628,6 +813,35 @@ test("超时 → paused → 自动重排一次；第二次超时不再重排", a
 
 // ── 10. 审批有结论 → 任务回队列（原来停在 awaiting_approval 就死路）──────
 
+test("桥上批完（只写账本、不重排）：派发这一轮把任务补回 queued", async () => {
+  const t = makeTempDb();
+  try {
+    migrate(t.db);
+    const taskId = createTask(t.db, { intent: "手机上点了同意但没人重排" });
+    const config = testConfig();
+    const governor = createBuiltinGovernor({ db: t.db, config });
+    await governor.beforeToolCall(
+      { toolName: "exec", params: { command: "git push origin main" }, toolCallId: "c1" },
+      { toolName: "exec", sessionKey: `task:${taskId}` },
+    );
+    const [approval] = listApprovals(t.db, { task_id: taskId });
+    assert.ok(approval !== undefined);
+    assert.equal(getTask(t.db, taskId)?.state, "awaiting_approval");
+
+    // 只记结论，不调 resumeAfterDecision —— 这正是桥 /api/approvals/answer 的做法。
+    assert.equal(decideApproval(t.db, approval.id, { decision: "approved", decidedBy: "dsbot" }), true);
+    assert.equal(getTask(t.db, taskId)?.state, "awaiting_approval", "只记账时任务还挂着（复现原状）");
+
+    const fake = fakeRuntime();
+    const report = await makeDispatcher(t.db, config, fake).tickOnce();
+    assert.deepEqual(report.claimed, [taskId], "派发器这一轮要把它补回队列并领走");
+    const after = getTask(t.db, taskId);
+    assert.equal(after?.run_epoch, 1, "补重排要 bump epoch");
+  } finally {
+    t.cleanup();
+  }
+});
+
 test("审批通过：任务回 queued、epoch+1，下一轮 tick 能领到", async () => {
   const t = makeTempDb();
   try {
@@ -672,6 +886,27 @@ test("审批被拒：任务终止，不会再来一轮出同一张单", async ()
     const resume = resumeAfterDecision(t.db, approvalId);
     assert.equal(resume.action, "cancelled");
     assert.equal(getTask(t.db, taskId)?.state, "cancelled");
+  } finally {
+    t.cleanup();
+  }
+});
+
+test("审批过期没人点：派发这一轮收口，任务终止（不留死锁）", async () => {
+  const t = makeTempDb();
+  try {
+    migrate(t.db);
+    const taskId = createTask(t.db, { intent: "等批等到过期" });
+    // 真实踩到的死锁：单子 22:00 建、第二天还是 pending，任务一直停在 awaiting_approval。
+    createApprovalRow(t.db, { taskId, pendingUntil: new Date(Date.now() - 60_000).toISOString() });
+    setTaskState(t.db, taskId, "awaiting_approval", { expect: ["queued"] });
+
+    const fake = fakeRuntime();
+    const report = await makeDispatcher(t.db, testConfig(), fake).tickOnce();
+
+    assert.equal(fake.calls.length, 0, "过期不是同意：不该再派一次让工人重试同一个动作");
+    assert.equal(getTask(t.db, taskId)?.state, "cancelled");
+    assert.equal(listApprovals(t.db, { task_id: taskId })[0]?.status, "expired");
+    assert.equal(report.status, "idle");
   } finally {
     t.cleanup();
   }

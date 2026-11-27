@@ -15,6 +15,9 @@
  */
 
 import { listSteps, getTask, getArtifact, type LedgerDb, type TaskRow } from "../ledger/index.ts";
+import { existsSync, statSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
+import { declaredWorkspaceOf } from "../hands/files.ts";
 
 // ────────────────────────────────────────────────────────────────────────────
 // 契约类型
@@ -50,12 +53,24 @@ export interface ContractDeliverable {
   id: string;
   /** 人类可读描述。 */
   description: string;
-  /** 期望的产出类型："file" = 文件、"text" = 文本、"step" = 一次工具调用。 */
-  type: "file" | "text" | "step";
+  /**
+   * 期望的产出类型：
+   * - "file" = 文件
+   * - "text" = 文本
+   * - "step" = 一次工具调用（跑过一次就算完成）
+   * - "check" = 一条命令跑通（退出码 0，可选匹配输出）
+   */
+  type: "file" | "text" | "step" | "check";
   /** type="file" 时的期望路径（相对工作区）。 */
   path?: string;
-  /** type="step" 时的期望工具名（例如 "files" / "practice"）。 */
+  /** type="step" / "check" 时的期望工具名（例如 "files" / "practice" / "exec"）。 */
   tool?: string;
+  /** type="check" 时，命令行里必须出现的片段（例如 "node --test"）。 */
+  cmd?: string;
+  /** type="check" 时，输出里必须匹配的正则（例如 "fail 0"）。 */
+  match?: string;
+  /** type="check" 时，输出里不许出现的正则（例如 "✖"）。 */
+  forbid?: string;
   /** 完成判定（与 milestone 的 done_when 同格式）。 */
   done_when: string;
   /** 绑定到哪个里程碑（seq 号）。不填 = 不归任何里程碑。 */
@@ -133,7 +148,46 @@ export interface DeliverableCheckResult {
   deliverableId: string;
   completed: boolean;
   evidence: string;
-  type: "file" | "text" | "step";
+  type: "file" | "text" | "step" | "check";
+}
+
+/** 一步命令的产出拆解。非 JSON 结构（老记录、别的工具）就只留原始文本。 */
+interface CommandResult {
+  cmd: string;
+  exitCode: number | null;
+  stdout: string;
+}
+
+function commandResultOf(db: LedgerDb, resultRef: string | null): CommandResult {
+  const empty: CommandResult = { cmd: "", exitCode: null, stdout: "" };
+  if (resultRef === null) return empty;
+  let raw = "";
+  try {
+    const art = getArtifact(db, resultRef);
+    if (!art.found || art.content == null) return empty;
+    raw = String(art.content);
+  } catch {
+    return empty;
+  }
+  const out: CommandResult = { cmd: "", exitCode: null, stdout: raw };
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const data = parsed["data"];
+    if (data !== null && typeof data === "object" && !Array.isArray(data)) {
+      const d = data as Record<string, unknown>;
+      if (typeof d["cmd"] === "string") out.cmd = d["cmd"];
+      if (typeof d["exit_code"] === "number") out.exitCode = d["exit_code"];
+      const parts: string[] = [];
+      for (const key of ["stdout", "stderr"]) {
+        const v = d[key];
+        if (typeof v === "string" && v !== "") parts.push(v);
+      }
+      if (parts.length > 0) out.stdout = parts.join("\n");
+    }
+  } catch {
+    // 不是 JSON：保留原始文本当输出，cmd/退出码留空（交给 match 判定）
+  }
+  return out;
 }
 
 export interface ContractCheckReport {
@@ -257,10 +311,83 @@ export function checkContract(db: LedgerDb, taskId: string): ContractCheckReport
       const match = steps.find((s) => s.status === "succeeded" && (d.tool === undefined || s.tool === d.tool));
       completed = match !== undefined;
       evidence = completed ? `成功步骤 ${match!.id}（${match!.tool}）` : `没有 ${d.tool ?? "对应"} 工具的成功步骤`;
+    } else if (d.type === "check") {
+      // check：要有一步真跑通（退出码 0），可选匹配输出。
+      // 2026-11-27 加：原来「测试通过」只能用 type:"step" 表达，跑过一次就算交付，
+      // 真机里 node --test 全挂也照样算完。check 把退出码和输出都纳入判定。
+      const tool = d.tool ?? "exec";
+      const wantCmd = (d.cmd ?? "").toLowerCase();
+      let hit: string | null = null;
+      let bad: string | null = null; // 跑过但没过，原因是这个
+      for (const s of steps) {
+        if (s.status !== "succeeded" || s.tool !== tool) continue;
+        const r = commandResultOf(db, s.result_ref);
+        if (wantCmd !== "" && !r.cmd.toLowerCase().includes(wantCmd)) continue;
+        if (r.exitCode !== null && r.exitCode !== 0) {
+          bad = `退出码 ${r.exitCode}`;
+          continue;
+        }
+        if (d.match !== undefined && d.match !== "") {
+          try {
+            if (!new RegExp(d.match).test(r.stdout)) {
+              bad = `输出不匹配 /${d.match}/`;
+              continue;
+            }
+          } catch {
+            bad = `match 正则写错了：/${d.match}/`;
+            continue;
+          }
+        }
+        if (d.forbid !== undefined && d.forbid !== "") {
+          try {
+            if (new RegExp(d.forbid).test(r.stdout)) {
+              bad = `输出里出现了禁止内容 /${d.forbid}/`;
+              continue;
+            }
+          } catch {
+            bad = `forbid 正则写错了：/${d.forbid}/`;
+            continue;
+          }
+        }
+        hit = s.id;
+        break;
+      }
+      completed = hit !== null;
+      const what = `${tool}${wantCmd !== "" ? `「${d.cmd}」` : ""}`;
+      evidence = completed
+        ? `成功步骤 ${hit}（${what} 跑通）`
+        : bad !== null
+          ? `跑过 ${what} 但没过：${bad}`
+          : `没有跑通过 ${what}`;
     } else if (d.type === "file") {
-      // 只看成功步骤的 artifact 是否提到这个路径
-      completed = d.path !== undefined && resultText.includes(d.path);
-      evidence = completed ? `结果文本提到 ${d.path}` : `没有 ${d.path} 的产出`;
+      // 有工作区就真查磁盘（2026-11-27 加）：只看「结果文本提到路径」会把
+      // 「读了一个叫这个名字的文件」也算成交付，真机实过——任务判完成、文件根本不存在。
+      // 判定：文件存在，且改时间不早于任务创建（避免拿旧文件冒充）。
+      const path = d.path;
+      const ws = declaredWorkspaceOf(task);
+      if (path !== undefined && ws !== null) {
+        const abs = isAbsolute(path) ? path : join(ws, path);
+        const exists = existsSync(abs);
+        let ok = exists;
+        let note = `磁盘上有 ${abs}`;
+        if (ok) {
+          try {
+            const created = Date.parse(task.created_at);
+            ok = !Number.isFinite(created) || statSync(abs).mtimeMs + 1000 >= created;
+            if (!ok) note = `磁盘上有 ${abs}，但改时间早于这个任务的创建时间（不是这次任务建的，不认）`;
+          } catch {
+            ok = false;
+            note = `磁盘上有 ${abs}，但读不到改时间（不认）`;
+          }
+        } else {
+          note = `磁盘上没有 ${abs}`;
+        }
+        completed = ok;
+        evidence = note;
+      } else {
+        completed = path !== undefined && resultText.includes(path);
+        evidence = completed ? `结果文本提到 ${path}` : `没有 ${path} 的产出`;
+      }
     } else {
       // text：成功步骤有实际文本产出才算（不是任一成功步骤就让所有 text 交付物都完成）
       completed = resultText.trim().length > 0;
@@ -322,11 +449,12 @@ export function nextDeliverable(db: LedgerDb, taskId: string): DeliveryAction | 
 
   // 2. 有未完成的交付物 → 做下一个
   if (report.outstanding.length > 0) {
-    const nextId = report.outstanding[0];
+    const nextId = report.outstanding[0]!;
+    const detail = report.deliverables.find((r) => r.deliverableId === nextId)?.evidence ?? "";
     return {
       action: "produce_deliverable",
       deliverableId: nextId,
-      guidance: `下一个交付物：${nextId}。做完这个再看剩下的。`,
+      guidance: `下一个交付物：${nextId}（${detail}）。做完这个再看剩下的。`,
     };
   }
 

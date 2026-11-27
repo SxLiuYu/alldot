@@ -4,7 +4,7 @@
  * 覆盖：
  * - token 没有 → 除 /health 外 503；
  * - 状态页带 token 才能看，内容含模板卡/待批/恢复报告/顶部 keep 行；
- * - /mcp 的 initialize、tools/list、四个工具各自的转发路径与原文；
+ * - /mcp 的 initialize、tools/list、五个工具各自的转发路径与原文；
  * - 大脑掉线时状态页仍可用、标「大脑掉线（…时起）」，且账本一条事件都没多；
  * - keep.json 盘紧 → brain_task 直接拒，且不往大脑发请求；
  * - /artifact/<hash> 只读取全文，找不到回「已回收·原因」。
@@ -136,8 +136,12 @@ interface FakeBrain {
 }
 
 const FAKE_CARD = "【任务 task_fake】整理截图\n状态：执行中（第 1 个里程碑，共 2 个）\n卡在谁：没人";
+const FAKE_REPLY = "这是大脑的回答原文。";
+const FAKE_REPLY_ERROR = "回答不了：模型池回了 HTTP 502（炸了）。";
 
-async function startFakeBrain(opts: { statusRoute?: "ok" | "404" | "401" } = {}): Promise<FakeBrain> {
+async function startFakeBrain(
+  opts: { statusRoute?: "ok" | "404" | "401"; replyRoute?: "ok" | "http502" | "404" } = {},
+): Promise<FakeBrain> {
   const calls: BrainCall[] = [];
   const server: Server = createServer(async (req: IncomingMessage, res) => {
     const chunks: Buffer[] = [];
@@ -200,6 +204,27 @@ async function startFakeBrain(opts: { statusRoute?: "ok" | "404" | "401" } = {})
     }
     if (/^\/dot\/bridge\/v1\/tasks\/[^/]+\/cancel$/.test(path)) {
       reply(200, { ok: true, task: { id: "task_fake", state: "cancelled" }, message: "已取消任务 task_fake" });
+      return;
+    }
+    if (path === "/dot/bridge/v1/reply") {
+      if (opts.replyRoute === "404") {
+        reply(404, { ok: false, error: "unknown_route", message: "没有这个桥路由：POST /reply" });
+        return;
+      }
+      if (opts.replyRoute === "http502") {
+        reply(502, { ok: false, error: "model_failed", message: FAKE_REPLY_ERROR, status: 502 });
+        return;
+      }
+      reply(200, {
+        ok: true,
+        reply: FAKE_REPLY,
+        model: "deepseek-v4.1-flash",
+        usage: { input_tokens: 1, output_tokens: 2 },
+        spend_id: "spend_fake",
+        event_seq: 1,
+        elapsed_ms: 5,
+        truncated: false,
+      });
       return;
     }
     reply(404, { ok: false, error: "unknown_route", message: path });
@@ -322,7 +347,7 @@ test("状态页：无 token 401，带 token 200，任务/待批/恢复报告/kee
   }
 });
 
-test("POST /mcp：initialize、tools/list、四个工具各自的转发", async () => {
+test("POST /mcp：initialize、tools/list、五个工具各自的转发", async () => {
   const fx = makeFixture();
   const brain = await startFakeBrain();
   const service = createBridgeService({
@@ -350,7 +375,7 @@ test("POST /mcp：initialize、tools/list、四个工具各自的转发", async 
     const tools = (resultOf(list).tools ?? []) as Array<{ name: string }>;
     assert.deepEqual(
       tools.map((t) => t.name),
-      ["brain_task", "brain_status", "brain_answer", "brain_cancel"],
+      ["brain_task", "brain_status", "brain_answer", "brain_cancel", "brain_reply"],
     );
 
     const task = await callMcp(url, token, {
@@ -555,5 +580,133 @@ test("状态页的模板卡与账本 renderProgressCard 逐字一致", async () 
     await service.stop();
     await brain.close();
     fx.cleanup();
+  }
+});
+
+test("brain_reply 成功：content[0].text 逐字等于回答原文，且只打 /reply 不碰 /tasks", async () => {
+  const fx = makeFixture();
+  const brain = await startFakeBrain();
+  const service = createBridgeService({
+    port: 0,
+    pathOptions: { dotDir: fx.dotDir },
+    gatewayToken: "test-gateway-token",
+    upstreamBaseUrl: brain.url,
+  });
+  try {
+    const { url } = await service.start();
+    const res = await callMcp(url, fx.token as string, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "brain_reply", arguments: { intent: "你好" } },
+    });
+    const result = resultOf(res) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+      structuredContent?: { ok: boolean; reply: string };
+    };
+    assert.equal(result.isError, undefined);
+    assert.equal(result.content[0]?.text, FAKE_REPLY, "回答原文不能加前缀");
+    assert.deepEqual(result.structuredContent, { ok: true, reply: FAKE_REPLY });
+
+    assert.deepEqual(brain.calls.map((c) => c.path), ["/dot/bridge/v1/reply"], "只回答通道不得调 /tasks");
+    assert.equal(brain.calls[0]?.body.via, "mcp", "MCP 工具固定传 via=mcp");
+    assert.equal(brain.calls[0]?.body.intent, "你好");
+  } finally {
+    await service.stop();
+    await brain.close();
+    fx.cleanup();
+  }
+});
+
+test("brain_reply 失败：502 逐字用 message；404 提示版本旧；连不上提示连不上大脑；都不调 /tasks", async () => {
+  // 502：逐字转出大脑的 message
+  {
+    const fx = makeFixture();
+    const brain = await startFakeBrain({ replyRoute: "http502" });
+    const service = createBridgeService({
+      port: 0,
+      pathOptions: { dotDir: fx.dotDir },
+      gatewayToken: "test-gateway-token",
+      upstreamBaseUrl: brain.url,
+    });
+    try {
+      const { url } = await service.start();
+      const res = await callMcp(url, fx.token as string, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "brain_reply", arguments: { intent: "你好" } },
+      });
+      const result = resultOf(res) as { content: Array<{ text: string }>; isError?: boolean; structuredContent?: { message: string } };
+      assert.equal(result.isError, true);
+      assert.equal(result.content[0]?.text, FAKE_REPLY_ERROR, "逐字用大脑回的 message");
+      assert.equal(result.structuredContent?.message, FAKE_REPLY_ERROR);
+      assert.deepEqual(brain.calls.map((c) => c.path), ["/dot/bridge/v1/reply"]);
+    } finally {
+      await service.stop();
+      await brain.close();
+      fx.cleanup();
+    }
+  }
+
+  // 404：旧版本没有这条通道
+  {
+    const fx = makeFixture();
+    const brain = await startFakeBrain({ replyRoute: "404" });
+    const service = createBridgeService({
+      port: 0,
+      pathOptions: { dotDir: fx.dotDir },
+      gatewayToken: "test-gateway-token",
+      upstreamBaseUrl: brain.url,
+    });
+    try {
+      const { url } = await service.start();
+      const res = await callMcp(url, fx.token as string, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "brain_reply", arguments: { intent: "你好" } },
+      });
+      const result = resultOf(res) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(result.isError, true);
+      assert.ok(result.content[0]?.text.includes("大脑版本不支持这条通道"));
+      assert.deepEqual(brain.calls.map((c) => c.path), ["/dot/bridge/v1/reply"]);
+    } finally {
+      await service.stop();
+      await brain.close();
+      fx.cleanup();
+    }
+  }
+
+  // 连不上大脑
+  {
+    const fx = makeFixture();
+    const brain = await startFakeBrain();
+    const deadUrl = brain.url;
+    await brain.close();
+    const service = createBridgeService({
+      port: 0,
+      pathOptions: { dotDir: fx.dotDir },
+      gatewayToken: "test-gateway-token",
+      upstreamBaseUrl: deadUrl,
+      upstreamTimeoutMs: 300,
+    });
+    try {
+      const { url } = await service.start();
+      const res = await callMcp(url, fx.token as string, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "brain_reply", arguments: { intent: "你好" } },
+      });
+      const result = resultOf(res) as { content: Array<{ text: string }>; isError?: boolean };
+      assert.equal(result.isError, true);
+      assert.ok(result.content[0]?.text.includes("连不上大脑"));
+      assert.ok(result.content[0]?.text.includes("没提交，也没记账"));
+    } finally {
+      await service.stop();
+      fx.cleanup();
+    }
   }
 });

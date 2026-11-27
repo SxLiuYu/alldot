@@ -15,12 +15,33 @@
 import { readFileSync, writeFileSync, readdirSync, statSync, mkdirSync, existsSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import { homedir } from "node:os";
+import { fileURLToPath } from "node:url";
+
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
 const DOT = join(homedir(), ".allbot", "dot");
 const CATALOG = join(DOT, "skills-catalog", "src");
 const OUT_DIR = join(DOT, "skills");
 const OUT = join(OUT_DIR, "index.json");
 const statsOnly = process.argv.includes("--stats");
+
+/**
+ * 白名单：只保留不绑 SaaS、且判断/步骤能借给本机工人用的通用技能。
+ * 2026-11-26 从 584 条收窄：其余是 Twilio/Vercel/Zoom/Shopify 等连接器说明，
+ * 依赖对应的云账号和 API，在这台本机上读到了也执行不了，还会把检索淹掉。
+ * 想加新条目就写进这个集合；local/* 是项目自己的技能，不受白名单限制。
+ */
+const KEEP_IDS = new Set([
+  "skills/screenshot",                                             // 截图存哪儿、先截图再判断
+  "skills/pdf",                                                    // 先渲染成图看版式
+  "skills/define-goal",                                            // 把模糊意图变成可测目标
+  "skills/security-best-practices",                                // 通用安全做法
+  "skills/security-threat-model",                                  // 威胁建模，无命令依赖
+  "plugins/build-web-apps/frontend-testing-debugging",             // 前端排错流程
+  "plugins/data-analytics/analyze-data-quality",                   // 数据质量判断
+  "plugins/build-web-data-visualization/visualization-strategy-and-critique", // 图表选型
+  "plugins/codex-security/assess-patch-risk",                      // 补丁风险评估
+]);
 
 /** 只认 SKILL.md；YAML frontmatter 里取 name 和 description（支持折行续写）。 */
 function parseSkill(file) {
@@ -75,6 +96,7 @@ for (const file of walk(join(CATALOG, "skills-main"), [], (p) => basename(p) ===
     skipped.push(file);
     continue;
   }
+  if (!KEEP_IDS.has(`skills/${basename(dirname(file))}`)) continue;
   entries.push({
     id: `skills/${basename(dirname(file))}`,
     name: parsed.name,
@@ -97,13 +119,34 @@ for (const file of walk(join(CATALOG, "plugins", "plugins-main"), [], (p) => bas
     skipped.push(file);
     continue;
   }
+  const id = `plugins/${vendor}/${basename(dirname(file))}`;
+  if (!KEEP_IDS.has(id)) continue;
   entries.push({
-    id: `plugins/${vendor}/${basename(dirname(file))}`,
+    id,
     name: parsed.name,
     description: parsed.description,
     path: file,
     source: "openai/plugins",
     plugin: vendor,
+    bytes: statSync(file).size,
+  });
+}
+
+// 3) 项目本地技能：仓库 build/skills/<名字>/SKILL.md
+//    （2026-11-26 加：购物渠道等 alldot 专属做法放这里，和下载来的 openai 技能分开）
+const REPO_SKILLS = join(SCRIPT_DIR, "..", "skills");for (const file of walk(REPO_SKILLS, [], (p) => basename(p) === "SKILL.md")) {
+  const parsed = parseSkill(file);
+  if (parsed === null) {
+    skipped.push(file);
+    continue;
+  }
+  entries.push({
+    id: `local/${basename(dirname(file))}`,
+    name: parsed.name,
+    description: parsed.description,
+    path: file,
+    source: "local",
+    plugin: null,
     bytes: statSync(file).size,
   });
 }

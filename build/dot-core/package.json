@@ -16,7 +16,7 @@
     "entry": "./index.ts",
     "delivery": "jiti-direct-typescript",
     "typecheck": "tsc --noEmit",
-    "moduleDirs": ["src/ledger", "src/gate", "src/bridge", "src/hands", "src/context", "src/dispatch", "src/say", "src/selfeval", "src/selfimprove"]
+    "moduleDirs": ["src/ledger", "src/gate", "src/bridge", "src/hands", "src/context", "src/dispatch", "src/reply", "src/say", "src/selfeval", "src/selfimprove"]
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

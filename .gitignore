@@ -49,3 +49,6 @@ dsh-*-2weeks*
 # temp files at root
 _*
 example-*.png
+
+# ds-bot 打补丁时的中间备份（154 个历史版本，新电脑用不上）
+build/patches/ds-bot/backup/

@@ -6,7 +6,8 @@
 //
 // 参数（都有默认值，日常不用带）：
 //   --port <n>            默认 8799；0 = 随机端口（测试用）
-//   --host <addr>         默认 127.0.0.1（A.3：只听本机）
+//   --host <addr>         覆盖监听地址；不传时按 config.mobile_access.mode：
+//                         loopback=127.0.0.1，lan/tunnel/relay=0.0.0.0
 //   --data-dir <dir>      默认 ~/.allbot/dot；下面是 token/ledger/state 的相对布局
 //   --ledger <path>       默认 <data-dir>/ledger/dot.db
 //   --token-file <path>   默认 <data-dir>/bridge-token
@@ -106,7 +107,18 @@ if (dotConfig.say.enabled) {
 
 const service = createBridgeService({
   port,
-  host: args.host ?? "127.0.0.1",
+  // 不传 host 时由 server.ts 按 config.mobile_access.mode 决定：
+  // loopback=127.0.0.1，lan/tunnel/relay=0.0.0.0。显式 --host 可覆盖。
+  ...(args.host === undefined ? {} : { host: args.host }),
+  access: {
+    mode: dotConfig.mobile_access.mode,
+    host:
+      dotConfig.mobile_access.mode === "loopback"
+        ? "127.0.0.1"
+        : "0.0.0.0",
+    allowed_cidrs: dotConfig.mobile_access.allowed_cidrs,
+  },
+  voice: dotConfig.voice,
   pathOptions: {
     dotDir: dotPaths.dotDir,
     ledgerPath: dotPaths.ledgerPath,

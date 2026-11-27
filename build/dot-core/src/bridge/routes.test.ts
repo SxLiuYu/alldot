@@ -27,6 +27,8 @@ import {
   type LedgerDb,
 } from "../ledger/index.ts";
 import { planTask } from "../plan/index.ts";
+import { createReplyService, type ReplyFn } from "../reply/index.ts";
+import { ModelPoolError, type ModelComplete } from "../dispatch/local-worker.ts";
 import {
   BRIDGE_ROUTE_BASE,
   createBridgeRouteHandler,
@@ -59,6 +61,10 @@ async function startHarness(
     configPath?: string;
     /** 审批落定后的回调（自我优化流水线的入口）；测试里拿来核对有没有被叫、叫了几次。 */
     onApprovalDecided?: BridgeRouteDeps["onApprovalDecided"];
+    /** 只回答通道的大脑实现；不给则 /reply 应回 503 reply_not_wired。 */
+    reply?: BridgeRouteDeps["reply"];
+    /** 拿到 harness 的 db 后现造的只回答实现（要真写账本的用例用它）。 */
+    replyFactory?: (db: LedgerDb) => BridgeRouteDeps["reply"];
   } = {},
 ): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), "dot-bridge-routes-"));
@@ -96,6 +102,8 @@ async function startHarness(
     notify: opts.notify,
     ...(opts.configPath === undefined ? {} : { configPath: opts.configPath }),
     ...(opts.onApprovalDecided === undefined ? {} : { onApprovalDecided: opts.onApprovalDecided }),
+    ...(opts.reply === undefined ? {} : { reply: opts.reply }),
+    ...(opts.replyFactory === undefined ? {} : { reply: opts.replyFactory(db) }),
   };
   const handler = createBridgeRouteHandler(deps);
   const server: Server = createServer((req, res) => {
@@ -286,6 +294,11 @@ test("健康检查与参数校验", async () => {
     const badProfile = await call(h, "POST", `${BRIDGE_ROUTE_BASE}/tasks`, { intent: "x", profile: "turbo" });
     assert.equal(badProfile.status, 400);
     assert.equal(badProfile.json.error, "bad_profile");
+
+    // 中文按 GBK 发过来时服务端只会看到 U+FFFD；这种任务进账本谁也读不懂（真机留下过两条）。
+    const garbled = await call(h, "POST", `${BRIDGE_ROUTE_BASE}/tasks`, { intent: "在 D:/tmp 建文件 �� ok" });
+    assert.equal(garbled.status, 400);
+    assert.equal(garbled.json.error, "bad_encoding");
 
     assert.equal(mapAnswerToDecision("同意"), "approved");
     assert.equal(mapAnswerToDecision("1"), "approved");
@@ -591,6 +604,101 @@ test("审批落定会回调 onApprovalDecided（自我优化靠它接着生成�
     assert.equal(again.status, 200);
     assert.equal(again.json.changed, false);
     assert.equal(seen.length, 1, "幂等的重复答复不许再触发一遍流水线");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+function countTasks(db: LedgerDb): number {
+  const row = db.prepare("SELECT COUNT(*) AS n FROM tasks").get() as { n?: number };
+  return Number(row.n ?? 0);
+}
+
+test("POST /reply：假 reply 成功 → 200 字段齐全，tasks 行数不变", async () => {
+  const fakeReply: ReplyFn = async (input) => ({
+    ok: true,
+    reply: `回：${input.intent}`,
+    model: "deepseek-v4.1-flash",
+    usage: { input_tokens: 3, output_tokens: 7 },
+    spend_id: "spend_fake",
+    event_seq: 9,
+    elapsed_ms: 12,
+    truncated: false,
+  });
+  const h = await startHarness({ reply: fakeReply });
+  try {
+    const before = countTasks(h.db);
+    const res = await call(h, "POST", `${BRIDGE_ROUTE_BASE}/reply`, { intent: "你好" });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.ok, true);
+    assert.equal(res.json.reply, "回：你好");
+    assert.equal(res.json.model, "deepseek-v4.1-flash");
+    assert.deepEqual(res.json.usage, { input_tokens: 3, output_tokens: 7 });
+    assert.equal(res.json.spend_id, "spend_fake");
+    assert.equal(res.json.event_seq, 9);
+    assert.equal(res.json.elapsed_ms, 12);
+    assert.equal(res.json.truncated, false);
+    assert.equal(countTasks(h.db), before, "只回答通道绝不能建任务");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("POST /reply：via='mcp' 落进 reply_answered；spend_ledger 列不变（无 via）", async () => {
+  const complete: ModelComplete = async () => ({
+    text: "这是回答。",
+    toolCalls: [],
+    usage: { input_tokens: 2, output_tokens: 4 },
+  });
+  const h = await startHarness({ replyFactory: (db) => createReplyService({ db, complete }) });
+  try {
+    const before = countTasks(h.db);
+    const res = await call(h, "POST", `${BRIDGE_ROUTE_BASE}/reply`, { intent: "问一句", via: "mcp" });
+    assert.equal(res.status, 200);
+    assert.equal(res.json.reply, "这是回答。");
+
+    const ev = h.db
+      .prepare("SELECT payload_json FROM events WHERE type = 'reply_answered' ORDER BY seq DESC LIMIT 1")
+      .get() as { payload_json?: string } | undefined;
+    assert.ok(ev !== undefined, "应当写一条 reply_answered");
+    const payload = JSON.parse(ev!.payload_json ?? "{}") as Record<string, unknown>;
+    assert.equal(payload.via, "mcp");
+    assert.equal(countTasks(h.db), before, "不碰 tasks");
+
+    const cols = (h.db.prepare("PRAGMA table_info(spend_ledger)").all() as Array<{ name?: string }>).map((c) => c.name);
+    assert.ok(!cols.includes("via"), "spend_ledger 不新增 via 列");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("POST /reply：缺 intent → 400 bad_intent；未注入 → 503 reply_not_wired；model_timeout → 504；GET → 405", async () => {
+  const wired = await startHarness();
+  try {
+    const bad = await call(wired, "POST", `${BRIDGE_ROUTE_BASE}/reply`, {});
+    assert.equal(bad.status, 400);
+    assert.equal(bad.json.error, "bad_intent");
+
+    const noReply = await call(wired, "POST", `${BRIDGE_ROUTE_BASE}/reply`, { intent: "问一句" });
+    assert.equal(noReply.status, 503);
+    assert.equal(noReply.json.error, "reply_not_wired");
+
+    const get = await call(wired, "GET", `${BRIDGE_ROUTE_BASE}/reply`);
+    assert.equal(get.status, 405);
+  } finally {
+    await wired.cleanup();
+  }
+
+  const complete: ModelComplete = async () => {
+    throw new ModelPoolError("timeout", "aborted");
+  };
+  const h = await startHarness({ replyFactory: (db) => createReplyService({ db, complete }) });
+  try {
+    const timeout = await call(h, "POST", `${BRIDGE_ROUTE_BASE}/reply`, { intent: "问一句" });
+    assert.equal(timeout.status, 504);
+    assert.equal(timeout.json.error, "model_timeout");
+    assert.equal(timeout.json.status, 504);
+    assert.ok((timeout.json.message as string).includes("55 秒"));
   } finally {
     await h.cleanup();
   }

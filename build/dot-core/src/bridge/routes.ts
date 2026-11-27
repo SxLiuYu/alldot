@@ -16,6 +16,7 @@
  *   POST /dot/bridge/v1/tasks/<id>/cancel
  *   POST /dot/bridge/v1/tasks/<id>/replan（人改主意：写一次 user_changed_mind 重排）
  *   POST /dot/bridge/v1/notify（转交给桥，再转 8797 send_to_bot）
+ *   POST /dot/bridge/v1/reply（只回答：brain_reply 的大脑一侧，不建任务）
  *   GET  /dot/bridge/v1/health
  */
 
@@ -57,6 +58,15 @@ import {
 } from "../ledger/index.ts";
 import { resumeAfterDecision } from "../dispatch/resume.ts";
 import { replan } from "../plan/index.ts";
+import {
+  replyErrorMessage,
+  REPLY_DEFAULT_MAX_CHARS,
+  REPLY_MAX_CONTEXT_CHARS,
+  REPLY_MAX_INTENT_CHARS,
+  REPLY_MAX_MAX_CHARS,
+  REPLY_MIN_MAX_CHARS,
+  type ReplyFn,
+} from "../reply/index.ts";
 import type { SayRewrite } from "../say/index.ts";
 import { deployPendingPatch } from "../selfimprove/deploy.ts";
 import { listPendingPatches } from "../selfimprove/apply.ts";
@@ -107,6 +117,11 @@ export interface BridgeRouteDeps {
     decision: "approved" | "rejected";
     approval: ApprovalRow;
   }) => void;
+  /**
+   * 只回答通道（brain_reply）的大脑一侧。不传 = `POST /reply` 回 503 reply_not_wired。
+   * index.ts 注入 createReplyService(...)；桥本身永远不建任务、不记账。
+   */
+  reply?: ReplyFn;
   now?: () => Date;
 }
 
@@ -274,6 +289,16 @@ export function createBridgeRouteHandler(deps: BridgeRouteDeps): BridgeRouteHand
     const intent = optionalString(body.intent);
     if (intent === undefined) {
       sendJson(res, 400, { ok: false, error: "bad_intent", message: "intent 必填，且要是非空字符串" });
+      return;
+    }
+    // 中文没按 UTF-8 发过来时，服务端只会看到 U+FFFD（�）。这种任务存进账本谁也读不懂，
+    // 也治不好（真机账本里留下过两条），所以当场拒掉、让它重发。
+    if (intent.includes("�")) {
+      sendJson(res, 400, {
+        ok: false,
+        error: "bad_encoding",
+        message: "intent 里有乱码（U+FFFD）：中文不是按 UTF-8 发的。请用 UTF-8 重发一次，别让乱码进账本",
+      });
       return;
     }
     const profileRaw = optionalString(body.profile);
@@ -727,6 +752,86 @@ export function createBridgeRouteHandler(deps: BridgeRouteDeps): BridgeRouteHand
     });
   }
 
+  /**
+   * 只回答通道：POST /dot/bridge/v1/reply。
+   * 只转发到 deps.reply（由 index.ts 注入 createReplyService），自己不建任务、不写账本。
+   * 参数校验在这里做，文案统一取 replyErrorMessage()（C 表）。
+   */
+  async function handleReply(req: IncomingMessage, res: ServerResponse, deps: BridgeRouteDeps): Promise<void> {
+    const body = bodyRecord(await readJsonBody(req));
+
+    const intentRaw = body.intent;
+    const intent = typeof intentRaw === "string" ? intentRaw.trim() : "";
+    if (typeof intentRaw !== "string" || intent === "" || intent.length > REPLY_MAX_INTENT_CHARS) {
+      sendJson(res, 400, { ok: false, error: "bad_intent", message: replyErrorMessage("bad_intent"), status: 400 });
+      return;
+    }
+
+    let context: string | undefined;
+    if (body.context !== undefined && body.context !== null) {
+      if (typeof body.context !== "string" || body.context.length > REPLY_MAX_CONTEXT_CHARS) {
+        sendJson(res, 400, { ok: false, error: "bad_context", message: replyErrorMessage("bad_context"), status: 400 });
+        return;
+      }
+      context = body.context.trim() === "" ? undefined : body.context;
+    }
+
+    let maxChars = REPLY_DEFAULT_MAX_CHARS;
+    if (body.max_chars !== undefined && body.max_chars !== null) {
+      const raw = body.max_chars;
+      if (
+        typeof raw !== "number" ||
+        !Number.isInteger(raw) ||
+        raw < REPLY_MIN_MAX_CHARS ||
+        raw > REPLY_MAX_MAX_CHARS
+      ) {
+        sendJson(res, 400, { ok: false, error: "bad_max_chars", message: replyErrorMessage("bad_max_chars"), status: 400 });
+        return;
+      }
+      maxChars = raw;
+    }
+
+    let via = "dot-bridge";
+    if (body.via !== undefined && body.via !== null) {
+      if (typeof body.via !== "string" || !/^[a-z0-9_-]{1,32}$/.test(body.via)) {
+        sendJson(res, 400, { ok: false, error: "bad_via", message: replyErrorMessage("bad_via"), status: 400 });
+        return;
+      }
+      via = body.via;
+    }
+
+    if (deps.reply === undefined) {
+      sendJson(res, 503, {
+        ok: false,
+        error: "reply_not_wired",
+        message: replyErrorMessage("reply_not_wired"),
+        status: 503,
+      });
+      return;
+    }
+
+    const outcome = await deps.reply({ intent, ...(context === undefined ? {} : { context }), maxChars, via });
+    if (outcome.ok) {
+      sendJson(res, 200, {
+        ok: true,
+        reply: outcome.reply,
+        model: outcome.model,
+        usage: outcome.usage,
+        spend_id: outcome.spend_id,
+        event_seq: outcome.event_seq,
+        elapsed_ms: outcome.elapsed_ms,
+        truncated: outcome.truncated,
+      });
+      return;
+    }
+    sendJson(res, outcome.status, {
+      ok: false,
+      error: outcome.error,
+      message: outcome.message,
+      status: outcome.status,
+    });
+  }
+
   return async (req, res) => {
     const url = parseRequestUrl(req);
     const path = url.pathname;
@@ -789,6 +894,15 @@ export function createBridgeRouteHandler(deps: BridgeRouteDeps): BridgeRouteHand
           return true;
         }
         await handleCreateTask(req, res, db);
+        return true;
+      }
+      if (rest === "/reply") {
+        if (method !== "POST") {
+          res.writeHead(405, { Allow: "POST", "Content-Length": "0" });
+          res.end();
+          return true;
+        }
+        await handleReply(req, res, deps);
         return true;
       }
       if (rest === "/settings") {

@@ -16,6 +16,24 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import type { AccessMode } from "./bridge/access.ts";
+
+/** 手机接入方式：loopback=只本机，lan=局域网直连，tunnel=内网穿透，relay=自定义中继。 */
+export interface MobileAccessConfig {
+  mode: AccessMode;
+  allowed_cidrs: string[];
+}
+
+/** 语音（ASR/TTS）上游配置。密钥不写进配置，走环境变量。 */
+export interface VoiceSettings {
+  enabled: boolean;
+  base_url: string;
+  api_key_env: string;
+  voice: string;
+  max_asr_seconds: number;
+  max_tts_chars: number;
+}
+
 export class ConfigError extends Error {
   readonly path: string;
   constructor(path: string, message: string) {
@@ -111,11 +129,29 @@ export interface DotCoreConfig {
    */
   say: { enabled: boolean };
   /**
+   * 推送到手机：把「要你批」和「任务结果」推出去。
+   * 两条通道，填哪个用哪个，微信优先：wechat_python（helper 的 python）+ wechat_script；
+   * 飞书只需 feishu_webhook。都没填就是关着。
+   * 只推这两类，进度不推（推多了人会把通知关掉）。
+   */
+  notify: {
+    enabled: boolean;
+    feishu_webhook: string;
+    wechat_python: string;
+    wechat_script: string;
+    wechat_marker: string;
+    poll_sec: number;
+  };
+  /**
    * 自我优化（体检 → 提改动建议）。默认关。
    * 关着时 collectMetrics 仍可单独调用，但 propose / apply 一律不跑。
    * 开着也只到「写 pending 补丁 + 请示卡」，绝不改源码，见 src/selfimprove/。
    */
   self_improve: { enabled: boolean; max_proposals_per_day: number };
+  /** 手机接入：默认 loopback（老安装行为不变）。 */
+  mobile_access: MobileAccessConfig;
+  /** 语音：默认关，开之前要配好环境变量里的上游 key。 */
+  voice: VoiceSettings;
 }
 
 /** B.4 的缺省值，逐字照抄；config.example.json 必须与本函数的输出一致（有测试）。 */
@@ -164,7 +200,24 @@ export function defaultConfig(): DotCoreConfig {
     },
     practice: { root: null },
     say: { enabled: false },
+    notify: {
+      enabled: false,
+      feishu_webhook: "",
+      wechat_python: "",
+      wechat_script: "",
+      wechat_marker: "alldot",
+      poll_sec: 10,
+    },
     self_improve: { enabled: true, max_proposals_per_day: 2 },
+    mobile_access: { mode: "loopback", allowed_cidrs: [] },
+    voice: {
+      enabled: false,
+      base_url: "https://www.sxliuyu.bond",
+      api_key_env: "ALLDOT_VOICE_API_KEY",
+      voice: "alloy",
+      max_asr_seconds: 58,
+      max_tts_chars: 450,
+    },
   };
 }
 
@@ -220,6 +273,15 @@ function nonEmptyStringAt(path: string, value: Json): string {
   return trimmed;
 }
 
+/**
+ * 普通字符串，允许空串（空 = 没配）。推送通道的几个路径用它：
+ * 用户可能只配飞书、微信留空，空串必须合法。
+ */
+function stringAt(path: string, value: Json): string {
+  if (typeof value !== "string") fail(path, "应为字符串");
+  return value.trim();
+}
+
 function recordAt(path: string, value: Json): Record<string, unknown> {
   if (!isPlainObject(value)) fail(path, "应为对象");
   return { ...value };
@@ -248,7 +310,10 @@ export function parseConfig(raw: Json, path = "config.json", base?: DotCoreConfi
     "dispatch",
     "practice",
     "say",
+    "notify",
     "self_improve",
+    "mobile_access",
+    "voice",
   ]);
 
   if (root["vision"] !== undefined) {
@@ -454,6 +519,33 @@ export function parseConfig(raw: Json, path = "config.json", base?: DotCoreConfi
     if (s["enabled"] !== undefined) out.say.enabled = boolAt(`${path}.say.enabled`, s["enabled"]);
   }
 
+  if (root["notify"] !== undefined) {
+    const n = objectAt(`${path}.notify`, root["notify"], [
+      "enabled",
+      "feishu_webhook",
+      "wechat_python",
+      "wechat_script",
+      "wechat_marker",
+      "poll_sec",
+    ]);
+    if (n["enabled"] !== undefined) out.notify.enabled = boolAt(`${path}.notify.enabled`, n["enabled"]);
+    if (n["feishu_webhook"] !== undefined) {
+      out.notify.feishu_webhook = stringAt(`${path}.notify.feishu_webhook`, n["feishu_webhook"]);
+    }
+    if (n["wechat_python"] !== undefined) {
+      out.notify.wechat_python = stringAt(`${path}.notify.wechat_python`, n["wechat_python"]);
+    }
+    if (n["wechat_script"] !== undefined) {
+      out.notify.wechat_script = stringAt(`${path}.notify.wechat_script`, n["wechat_script"]);
+    }
+    if (n["wechat_marker"] !== undefined) {
+      out.notify.wechat_marker = stringAt(`${path}.notify.wechat_marker`, n["wechat_marker"]);
+    }
+    if (n["poll_sec"] !== undefined) {
+      out.notify.poll_sec = numberAt(`${path}.notify.poll_sec`, n["poll_sec"], 5, 600);
+    }
+  }
+
   if (root["self_improve"] !== undefined) {
     const si = objectAt(`${path}.self_improve`, root["self_improve"], [
       "enabled",
@@ -466,6 +558,48 @@ export function parseConfig(raw: Json, path = "config.json", base?: DotCoreConfi
       out.self_improve.max_proposals_per_day = Math.floor(
         numberAt(`${path}.self_improve.max_proposals_per_day`, si["max_proposals_per_day"], 0, 20),
       );
+    }
+  }
+
+  if (root["mobile_access"] !== undefined) {
+    const m = objectAt(`${path}.mobile_access`, root["mobile_access"], ["mode", "allowed_cidrs"]);
+    if (m["mode"] !== undefined) {
+      const v = nonEmptyStringAt(`${path}.mobile_access.mode`, m["mode"]);
+      if (v !== "loopback" && v !== "lan" && v !== "tunnel" && v !== "relay") {
+        fail(`${path}.mobile_access.mode`, "只能是 loopback / lan / tunnel / relay");
+      }
+      out.mobile_access.mode = v as AccessMode;
+    }
+    if (m["allowed_cidrs"] !== undefined) {
+      out.mobile_access.allowed_cidrs = stringListAt(
+        `${path}.mobile_access.allowed_cidrs`,
+        m["allowed_cidrs"],
+      );
+    }
+  }
+
+  if (root["voice"] !== undefined) {
+    const v = objectAt(`${path}.voice`, root["voice"], [
+      "enabled",
+      "base_url",
+      "api_key_env",
+      "voice",
+      "max_asr_seconds",
+      "max_tts_chars",
+    ]);
+    if (v["enabled"] !== undefined) out.voice.enabled = boolAt(`${path}.voice.enabled`, v["enabled"]);
+    if (v["base_url"] !== undefined) {
+      out.voice.base_url = nonEmptyStringAt(`${path}.voice.base_url`, v["base_url"]);
+    }
+    if (v["api_key_env"] !== undefined) {
+      out.voice.api_key_env = nonEmptyStringAt(`${path}.voice.api_key_env`, v["api_key_env"]);
+    }
+    if (v["voice"] !== undefined) out.voice.voice = nonEmptyStringAt(`${path}.voice.voice`, v["voice"]);
+    if (v["max_asr_seconds"] !== undefined) {
+      out.voice.max_asr_seconds = numberAt(`${path}.voice.max_asr_seconds`, v["max_asr_seconds"], 1, 600);
+    }
+    if (v["max_tts_chars"] !== undefined) {
+      out.voice.max_tts_chars = numberAt(`${path}.voice.max_tts_chars`, v["max_tts_chars"], 1, 2000);
     }
   }
 
@@ -529,7 +663,10 @@ export function cloneConfig(config: DotCoreConfig): DotCoreConfig {
     dispatch: { ...config.dispatch },
     practice: { ...config.practice },
     say: { ...config.say },
+    notify: { ...config.notify },
     self_improve: { ...config.self_improve },
+    mobile_access: { ...config.mobile_access, allowed_cidrs: [...config.mobile_access.allowed_cidrs] },
+    voice: { ...config.voice },
   };
 }
 
@@ -558,7 +695,10 @@ export function mergeConfig(base: DotCoreConfig, override: DotCoreConfig): DotCo
     dispatch: { ...base.dispatch, ...override.dispatch },
     practice: { ...base.practice, ...override.practice },
     say: { ...base.say, ...override.say },
+    notify: { ...base.notify, ...override.notify },
     self_improve: { ...base.self_improve, ...override.self_improve },
+    mobile_access: { ...base.mobile_access, ...override.mobile_access },
+    voice: { ...base.voice, ...override.voice },
   };
 }
 

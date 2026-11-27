@@ -38,7 +38,7 @@ import {
   type MkdirResult,
   type WriteResult,
 } from "./practice.ts";
-import { renderList, runHandShell, type HandDeps, type HandOutcome, type HandRequest, type HandSpec } from "./hand.ts";
+import { HAND_TEXT_LIMIT, renderList, runHandShell, type HandDeps, type HandOutcome, type HandRequest, type HandSpec } from "./hand.ts";
 import type { GateInput } from "../gate/types.ts";
 
 export const FILES_TOOL_NAME = "files";
@@ -305,14 +305,26 @@ const filesSpec: HandSpec<FilesContext> = {
       } catch {
         throw new PracticeError("not_found", `文件不存在：${resolved.rel}`);
       }
-      // 超长文件截断，避免把模型上下文撑爆
-      const MAX_READ = 8000;
-      const truncated = content.length > MAX_READ;
+      // 超长文件截断，避免把模型上下文撑爆。
+      // 2026-11-27 加 offset：原来截断就完了，没有「接着读」的办法，工人只好改用
+      // exec 跑 `tail -n +900` 一段段啃 routes.ts（真机上一条任务因此读了 70 多步）。
+      // 顺手修掉一个更隐蔽的：窗口原来写 8000，可 hand 层的正文上限是 HAND_TEXT_LIMIT(4000)，
+      // 于是每次都被二次截断、连「截断」那句尾巴都掉，模型以为文件就这么长。
+      const MAX_READ = HAND_TEXT_LIMIT - 600; // 给头尾留位置
+      const rawOffset = Number((req.params ?? {})["offset"] ?? 0);
+      const asked = Number.isFinite(rawOffset) && rawOffset > 0 ? Math.floor(rawOffset) : 0;
+      // offset 越界不报错（模型算错很常见），退到最后一屏。
+      const offset = asked >= content.length ? Math.max(0, content.length - MAX_READ) : asked;
+      const window = content.slice(offset, offset + MAX_READ);
+      const next = offset + window.length;
+      const rest = next < content.length;
+      const gap = offset === 0 ? "" : `，从第 ${offset} 字符起`;
       return {
-        data: { path: resolved.rel, bytes: Buffer.byteLength(content), truncated },
-        summary: truncated
-          ? `文件：${resolved.rel}（${content.length} 字符，太长只给前 ${MAX_READ} 字符）\n---\n${content.slice(0, MAX_READ)}\n---（截断）`
-          : `文件：${resolved.rel}（${content.length} 字符）\n---\n${content}\n---`,
+        data: { path: resolved.rel, bytes: Buffer.byteLength(content), truncated: rest, offset, next },
+        // 「接着读用 offset=…」必须放在第一行：正文超长时 hand 层截的是尾巴。
+        summary: rest
+          ? `文件：${resolved.rel}（共 ${content.length} 字符${gap}，这次给到第 ${next} 字符；还没完，接着读用 offset=${next}）\n---\n${window}\n---`
+          : `文件：${resolved.rel}（共 ${content.length} 字符${gap}）\n---\n${window}\n---${offset > 0 ? "（已到文件末尾）" : ""}`,
       };
     }
     if (typeof path !== "string" || path.trim() === "") {

@@ -1591,12 +1591,12 @@ export function install(rt) {
 }
 
 // dot:no-hands (begin)
-// 机器人只留嘴：允许名单外的工具一律拒绝。名单文件 ~/.dsh/plugins/dot-bot-policy/policy.json 只覆盖下面 6 个说话工具；4 个桥工具写死在 DOT_BRAIN，不走名单文件，漏写或写坏也耽误不了找大脑。
+// 机器人只留嘴：允许名单外的工具一律拒绝。名单文件 ~/.dsh/plugins/dot-bot-policy/policy.json 只覆盖下面 6 个说话工具；5 个桥工具写死在 DOT_BRAIN，不走名单文件，漏写或写坏也耽误不了找大脑。
 const DOT_MOUTH = new Set(['ask_user', 'show_view', 'list_bots', 'message_bot', 'group_goal', 'read_own_chat'])
-const DOT_BRAIN = new Set(['mcp__brain__brain_task', 'mcp__brain__brain_status', 'mcp__brain__brain_answer', 'mcp__brain__brain_cancel'])
+const DOT_BRAIN = new Set(['mcp__brain__brain_task', 'mcp__brain__brain_status', 'mcp__brain__brain_answer', 'mcp__brain__brain_cancel', 'mcp__brain__brain_reply'])
 const DOT_MOUTH_FILE = 'C:/Users/1/.dsh/plugins/dot-bot-policy/policy.json'
 const DOT_GUARD_LOG = 'C:/Users/1/.dsh/bot/dot-guard.jsonl'
-const DOT_NO_HANDS = 'This Bot has no hands. Only chat, ask_user, show_view and mcp__brain__brain_task, mcp__brain__brain_status, mcp__brain__brain_answer, mcp__brain__brain_cancel are available. Reply to the user, then call mcp__brain__brain_task to hand the work to the brain.'
+const DOT_NO_HANDS = 'This Bot has no hands. Only chat, ask_user, show_view and mcp__brain__brain_task, mcp__brain__brain_status, mcp__brain__brain_answer, mcp__brain__brain_cancel, mcp__brain__brain_reply are available. Reply to the user, then call mcp__brain__brain_task to hand the work to the brain.'
 let dotMouth = DOT_MOUTH, dotMouthAt = 0
 function dotRefreshMouth() {
   const now = Date.now()
